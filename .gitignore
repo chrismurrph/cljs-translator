@@ -11,5 +11,10 @@
 node_modules
 /resources/public/electric_starter_app/js
 /resources/electric-manifest.edn
+/resources/public/js/cljs-runtime/
+/resources/public/js/*.js
+/resources/public/js/*.js.map
 /target
 .DS_Store
+repl.calva-repl
+temp

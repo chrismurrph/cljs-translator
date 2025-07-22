@@ -1,5 +1,6 @@
 (ns translation-test
   (:require [clojure.test :refer [deftest testing is]]
+            [clojure.string :as string]
             [translator :as t]))
 
 (deftest test-simple-electric-to-reframe-translation
@@ -92,3 +93,40 @@
       (is (= expected-view (first (:views result))))
       (is (empty? (:events result)))
       (is (empty? (:subs result))))))
+
+(deftest test-current-translation-with-output
+  (testing "Current translation - writes to output files"
+    (let [electric-code '(e/defn Main [ring-request]
+                          (e/client
+                            (binding [dom/node js/document.body]
+                              (dom/h1 (dom/text "Hello from Electric Clojure"))
+                              (dom/p (dom/text "Source code for this page is in ")
+                                     (dom/code (dom/text "src/electric_start_app/main.cljc")))
+                              (dom/p (dom/text "Make sure you check the ")
+                                (dom/a (dom/props {:href "https://electric.hyperfiddle.net/" :target "_blank"})
+                                  (dom/text "Electric Tutorial"))))))
+          
+          ;; Call translate with output-ns to write files
+          result (t/translate electric-code "reframe-output")
+          
+          expected-view '(defn main-view []
+                           [:<>
+                            [:h1 "Hello from Electric Clojure"]
+                            [:p "Source code for this page is in "
+                             [:code "src/electric_start_app/main.cljc"]]
+                            [:p "Make sure you check the "
+                             [:a {:href "https://electric.hyperfiddle.net/" :target "_blank"}
+                              "Electric Tutorial"]]])]
+      
+      ;; Verify the result is correct
+      (is (= 1 (count (:views result))))
+      (is (= expected-view (first (:views result))))
+      (is (empty? (:events result)))
+      (is (empty? (:subs result)))
+      
+      ;; Verify the file was written by reading it back
+      (let [written-content (slurp "reframe-output/reframe_output/views.cljs")]
+        (is (string? written-content))
+        (is (string/includes? written-content "ns reframe-output.views"))
+        (is (string/includes? written-content "defn"))
+        (is (string/includes? written-content "main-view"))))))

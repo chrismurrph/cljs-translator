@@ -1,7 +1,9 @@
 (ns translator
   (:require [rewrite-clj.zip :as z]
             [rewrite-clj.node :as n]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clojure.pprint :as pp]
+            [cljfmt.core :as fmt])) 
 
 (defn- electric-name->view-name
   "Convert Electric function name to Re-frame view name"
@@ -122,36 +124,74 @@
             (first translated-bodies))
       ;; Multiple elements - wrap in React Fragment
       (list 'defn view-name []
-            (into [:<>] translated-bodies)))))
+            (into [:<>] translated-bodies))))) 
+
+(defn- write-forms-to-file!
+  "Write forms to a file with the given namespace"
+  [ns-name forms]
+  (let [ns-parts (str/split (str ns-name) #"\.")
+        ;; Get the base namespace (e.g., "reframe-output")
+        base-ns (first ns-parts)
+        ;; Create the nested directory structure
+        dir-parts (mapv #(str/replace % "-" "_") ns-parts)
+        ;; The file path includes both the hyphenated and underscored versions
+        file-path (str base-ns "/" (apply str (interpose "/" dir-parts)) ".cljs")
+        ns-form (list 'ns (symbol ns-name))
+        ;; Start with just the namespace
+        content-parts [(pr-str ns-form)]
+        ;; Add each form with a blank line before it
+        form-strings (for [form forms]
+                       (str "\n\n" (with-out-str (pp/pprint form))))
+        ;; Combine all content
+        file-content (apply str (concat content-parts form-strings))
+        ;; Create directory if needed
+        file (clojure.java.io/file file-path)
+        parent-dir (.getParentFile file)]
+    (when parent-dir
+      (.mkdirs parent-dir))
+    (spit file-path file-content))) 
 
 (defn translate
   "Translate Electric code to Re-frame components.
-   Returns a map with :views, :events, and :subs keys."
-  [electric-code]
-  ;; Convert the code to a string for rewrite-clj
-  (let [code-str (pr-str electric-code)
-        zloc (z/of-string code-str)]
-    
-    ;; Find the e/defn form
-    (if-let [defn-zloc (z/find-value zloc z/next 'e/defn)]
-      (let [;; Get the function name (move right from e/defn)
-            name-zloc (z/right defn-zloc)
-            electric-name (z/sexpr name-zloc)
-            ;; Find body expressions
-            body-zlocs (find-client-binding-body (z/up defn-zloc))]
-        
-        (if (seq body-zlocs)
-          {:views [(create-view-function electric-name body-zlocs)]
-           :events []
-           :subs []}
-          ;; Empty body
-          {:views [(create-view-function electric-name [])]
-           :events []
-           :subs []}))
-      ;; No e/defn found
-      {:views []
-       :events []
-       :subs []})))
+   Returns a map with :views, :events, and :subs keys.
+   If output-ns is provided, writes the forms to the corresponding files."
+  ([electric-code] 
+   (translate electric-code nil))
+  ([electric-code output-ns]
+   ;; Convert the code to a string for rewrite-clj
+   (let [code-str (pr-str electric-code)
+         zloc (z/of-string code-str)
+         ;; Find the e/defn form
+         result (if-let [defn-zloc (z/find-value zloc z/next 'e/defn)]
+                  (let [;; Get the function name (move right from e/defn)
+                        name-zloc (z/right defn-zloc)
+                        electric-name (z/sexpr name-zloc)
+                        ;; Find body expressions
+                        body-zlocs (find-client-binding-body (z/up defn-zloc))]
+                    
+                    (if (seq body-zlocs)
+                      {:views [(create-view-function electric-name body-zlocs)]
+                       :events []
+                       :subs []}
+                      ;; Empty body
+                      {:views [(create-view-function electric-name [])]
+                       :events []
+                       :subs []}))
+                  ;; No e/defn found
+                  {:views []
+                   :events []
+                   :subs []})]
+     
+     ;; If output-ns is provided, write the forms to files
+     (when output-ns
+       (when (seq (:views result))
+         (write-forms-to-file! (str output-ns ".views") (:views result)))
+       (when (seq (:events result))
+         (write-forms-to-file! (str output-ns ".events") (:events result)))
+       (when (seq (:subs result))
+         (write-forms-to-file! (str output-ns ".subs") (:subs result))))
+     
+     result)))
 
 ;; Alternative version that works directly with files
 (defn translate-file
