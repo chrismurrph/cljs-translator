@@ -1,0 +1,16 @@
+{:dependencies [[reagent/reagent "1.2.0"]]
+ :builds
+ {:electric-dev {:target :browser
+                 :devtools {:loader-mode :default, :watch-dir "resources/public/electric_starter_app"}
+                 :output-dir "resources/public/electric_starter_app/js"
+                 :asset-path "/js"
+                 :modules {:main {:entries [dev] :init-fn dev/start!}}
+                 :build-hooks [(hyperfiddle.electric.shadow-cljs.hooks/reload-clj)]}
+  :reframe-dev {:target :browser
+                :output-dir "resources/public/js"
+                :asset-path "/js"
+                :modules {:main {:entries [dev] :init-fn restaurant.with-customer.phone/init}}
+                :devtools {:after-load restaurant.with-customer.phone/reload!}
+                ;; Add this to force using cljsjs packages:
+                #_#_:js-options {:js-package-dirs []} ; Empty array prevents npm lookups
+                }}}

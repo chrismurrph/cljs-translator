@@ -1,0 +1,12 @@
+{:allowed-directories ["."
+                       "src" 
+                       "test" 
+                       "electric-src"
+                       "reframe-examples"
+                       "reframe-output"
+                       ]
+ :write-file-guard :partial-read
+ :cljfmt true
+ :bash-over-nrepl true
+ :scratch-pad-load false  ; Default: false 
+ :scratch-pad-file "scratch_pad.edn"}
