@@ -2,8 +2,7 @@
   (:require [rewrite-clj.zip :as z]
             [rewrite-clj.node :as n]
             [clojure.string :as str]
-            [clojure.pprint :as pp]
-            [cljfmt.core :as fmt])) 
+            [clojure.pprint :as pp])) 
 
 (defn- electric-name->view-name
   "Convert Electric function name to Re-frame view name"
@@ -126,6 +125,31 @@
       (list 'defn view-name []
             (into [:<>] translated-bodies))))) 
 
+(defn- translate-dom-forms
+  "Translate a sequence of DOM forms (or a single form) to Hiccup.
+   Can handle:
+   - Single form: (dom/div ...)
+   - Multiple forms as a list: ((dom/h1 ...) (dom/p ...))
+   - Multiple forms as separate args: (dom/h1 ...) (dom/p ...)"
+  [dom-forms]
+  (let [;; Check if it's a single DOM element
+        single-dom? (and (seq? dom-forms)
+                         (symbol? (first dom-forms))
+                         (str/starts-with? (str (first dom-forms)) "dom/"))
+        ;; Normalize to a sequence of forms
+        forms (if single-dom?
+                [dom-forms]
+                dom-forms)
+        ;; Convert each form to a zipper and translate
+        translated (mapv (fn [form]
+                          (let [zloc (z/of-string (pr-str form))]
+                            (translate-dom-element zloc)))
+                        forms)]
+    ;; Return single element or wrap multiple in fragment
+    (if (= 1 (count translated))
+      (first translated)
+      (into [:<>] translated))))
+
 (defn- write-forms-to-file!
   "Write forms to a file with the given namespace"
   [ns-name forms]
@@ -153,6 +177,10 @@
 
 (defn translate
   "Translate Electric code to Re-frame components.
+   Accepts either:
+   - An e/defn form: (e/defn Name [...] ...)
+   - A single DOM form: (dom/div ...)
+   - Multiple DOM forms: ((dom/h1 ...) (dom/p ...))
    Returns a map with :views, :events, and :subs keys.
    If output-ns is provided, writes the forms to the corresponding files."
   ([electric-code] 
@@ -161,8 +189,9 @@
    ;; Convert the code to a string for rewrite-clj
    (let [code-str (pr-str electric-code)
          zloc (z/of-string code-str)
-         ;; Find the e/defn form
+         ;; Check if it's an e/defn form
          result (if-let [defn-zloc (z/find-value zloc z/next 'e/defn)]
+                  ;; Handle e/defn form
                   (let [;; Get the function name (move right from e/defn)
                         name-zloc (z/right defn-zloc)
                         electric-name (z/sexpr name-zloc)
@@ -177,10 +206,11 @@
                       {:views [(create-view-function electric-name [])]
                        :events []
                        :subs []}))
-                  ;; No e/defn found
-                  {:views []
-                   :events []
-                   :subs []})]
+                  ;; Not an e/defn - assume it's DOM form(s)
+                  (let [translated-hiccup (translate-dom-forms electric-code)]
+                    {:views [translated-hiccup]
+                     :events []
+                     :subs []}))]
      
      ;; If output-ns is provided, write the forms to files
      (when output-ns

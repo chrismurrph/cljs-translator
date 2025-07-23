@@ -79,14 +79,25 @@ This project is an AI-assisted tool for translating Electric Clojure programs in
 ### Core Functions
 
 #### `translate [electric-code] [output-ns]`
-Main entry point that takes Electric code as a quoted form and returns a map with :views, :events, and :subs keys.
+Main entry point that accepts either:
+- An e/defn form: `(e/defn Name [...] ...)`
+- A single DOM form: `(dom/div ...)`
+- Multiple DOM forms: `((dom/h1 ...) (dom/p ...))`
+
+Returns a map with :views, :events, and :subs keys.
 When `output-ns` is provided, also writes the generated forms to files.
 
 ```clojure
+;; Translate e/defn form
 (translate '(e/defn Main [ring-request] ...))
 ;; => {:views [...], :events [], :subs []}
 
-(translate '(e/defn Main [ring-request] ...) "reframe-output")
+;; Translate direct DOM forms
+(translate '(dom/div (dom/text "Hello")))
+;; => {:views [[:div "Hello"]], :events [], :subs []}
+
+;; Translate with file output
+(translate '((dom/h1 ...) (dom/p ...)) "reframe-output")
 ;; => {:views [...], :events [], :subs []}
 ;; Also writes to reframe-output/reframe_output/*.cljs files
 ```
@@ -105,7 +116,26 @@ Internal function that writes forms to files with proper formatting:
 - Tests verify translation output matches expected forms
 - All tests (old and new) must pass each round
 - Only ONE test with 'current' in its name writes to output files
-- Currently 5 tests passing covering: basic translation, empty functions, single elements, nested elements, file output
+- Currently 5 tests passing covering: direct DOM translation, empty functions, single elements, nested elements, file output
+
+### The 'Current' Test Pattern
+The project uses a specific pattern for managing which test writes to the output files:
+
+1. **Only one test with 'current' in its name** - This test is responsible for writing to the output files
+2. **Each development round**:
+   - The previous test with 'current' in its name is renamed to remove 'current'
+   - A new test is created with 'current' in the name for the new Electric patterns
+   - This ensures only the latest translation is written to the output files
+3. **Benefits**:
+   - Output files always show the most recent translation
+   - All historical tests are preserved and continue to run
+   - Easy to identify which test is currently driving the file output
+
+Example workflow:
+- Round 1: `test-current-translation-with-output` writes the basic DOM translation
+- Round 2: Rename to `test-basic-dom-translation`, create new `test-current-events-with-output`
+- Round 3: Rename to `test-events-translation`, create new `test-current-subscriptions-with-output`
+- And so on...
 
 ### Running Tests
 ```bash
@@ -119,9 +149,9 @@ clojure -Sdeps '{:paths ["src" "test"]}' -e "(require '[clojure.test]) (clojure.
 ### Development Workflow
 1. Human updates `electric-starter-app.main` with new Electric code
 2. Human updates `reframe-examples.*` with expected Re-frame output
-3. AI creates/updates tests for new patterns
-4. AI ensures translation function handles new patterns
-5. AI maintains ONE test with 'current' in name for file output
+3. AI renames the previous 'current' test (removes 'current' from name)
+4. AI creates new test with 'current' in name for new patterns
+5. AI ensures translation function handles new patterns
 6. All tests pass before moving to next round
 
 ### Code Organization
@@ -130,6 +160,7 @@ clojure -Sdeps '{:paths ["src" "test"]}' -e "(require '[clojure.test]) (clojure.
 - Separate concerns: parsing, transformation, code generation
 - File I/O isolated to `write-forms-to-file!` function
 - Pretty printing for readable output
+- Tests can use direct DOM forms instead of full e/defn forms for clarity
 
 ## Implementation with rewrite-clj
 
@@ -197,3 +228,4 @@ Generated files include:
 - Optional file output with proper formatting
 - Ready for iterative development of more complex patterns
 - Project set up for GitHub repository (electric-to-reframe)
+- Tests can use direct DOM forms for cleaner test code
