@@ -7,8 +7,8 @@ views.cljs, events.cljs and subs.cljs
 
 For manual (human) whole of application testing there are two aliases in deps.edn:
 
-:electric-dev 9630 8080 /     Electric
-:reframe-dev  9630 8082 /demo Re-frame
+* :electric-dev 9630 8080 /     Electric
+* :reframe-dev  9630 8082 /demo Re-frame
 
 These should be of little concern to the AI, which only needs to work at the Clojure level, translating forms.
 
