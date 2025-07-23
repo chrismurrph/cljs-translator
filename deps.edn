@@ -11,12 +11,17 @@
             :main-opts ["-m" "nrepl.cmdline" "--port" "7888"]}
            :electric-dev
            {:extra-paths ["electric-dev"]
-            :extra-deps  {com.hyperfiddle/electric       {:git/url "https://github.com/hyperfiddle/electric" :git/sha "b32ac98df7d7ec87f225d47354671be172ffa87e"}
-                          ring/ring                      {:mvn/version "1.11.0"}
+            :extra-deps  {com.hyperfiddle/electric {:mvn/version "v3-alpha-SNAPSHOT"}
+                          ring/ring                {:mvn/version "1.11.0"}
+                          ring-basic-authentication/ring-basic-authentication {:mvn/version "1.2.0"}
+                          io.github.tonsky/clj-reload {:mvn/version "0.9.0"}
+                          nano-id/nano-id   {:mvn/version "1.0.0"}
+                          com.rpl/specter   {:mvn/version "1.1.4"}
                           org.clojure/clojurescript      {:mvn/version "1.11.121"}
                           org.clojure/tools.logging      {:mvn/version "1.2.4"}
                           ch.qos.logback/logback-classic {:mvn/version "1.4.14"}
                           thheller/shadow-cljs           {:mvn/version "2.26.2"}
+                          com.thheller/shadow-css        {:mvn/version "0.4.6"}
                           io.github.clojure/tools.build  {:mvn/version "0.9.6"
                                                           :exclusions  [com.google.guava/guava
                                                                         org.slf4j/slf4j-nop]}}}
