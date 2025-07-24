@@ -6,29 +6,7 @@
    [hyperfiddle.electric-svg3 :as svg]
    [hyperfiddle.electric-dom3 :as dom]))
 
-(e/defn PaidLabel1 []
-  (let [width wc-domain/phone-width
-        half-width (/ width 2)
-        height (- wc-domain/phone-height 50)
-        half-height (/ height 2)]
-    (svg/svg
-      (dom/props {:width (str width) :height (str height)})
-      (svg/text
-        (dom/props {:x "50%"
-                    :y "50%"
-                    :opacity "35%"
-                    :fill "red"
-                    :font-size "110"
-                    :text-anchor "middle"
-                    :alignment-baseline "middle"
-                    :transform (str "rotate(-45 "
-                                 half-width
-                                 " "
-                                 half-height
-                                 ")")})
-        (dom/text "PAID")))))
-
-#_(e/defn PaidLabel2 []
+(e/defn PaidLabel []
   (let [width wc-domain/phone-width
         half-width (/ width 2)
         height (- wc-domain/phone-height 50)
@@ -78,9 +56,10 @@
           (dom/props {:class [(->class :wc/product-total-extension) (->class :gen/no-select)]})
           (dom/text amt))))))
 
-(e/defn Main [ring-request]
+(e/defn Main [ring-req]
   (e/client
-    (binding [dom/node js/document.body]
+    (binding [dom/node #?(:cljs js/document.body :clj nil)
+              e/http-request (e/server ring-req)]
       (dom/div
         (LabelAndAmount 0 0 "Some text" 20)
         (dom/h1
@@ -90,19 +69,3 @@
         (dom/p (dom/text "Make sure you check the ")
           (dom/a (dom/props {:href "https://electric.hyperfiddle.net/" :target "_blank"})
             (dom/text "Electric Tutorial")))))))
-
-#_(e/defn Nothing [app-name ring-req tab-id config]
-  (dom/div
-    (dom/div
-      (dom/text "app-name: " app-name))
-    (dom/div
-      (dom/text "tab-id: " tab-id))
-    (dom/div
-      (dom/text "config: " config))))
-
-#_(e/defn Main [ring-req]
-  (e/client
-    (binding [dom/node #?(:cljs js/document.body :clj nil)
-              e/http-request (e/server ring-req)]
-      (set! (.-title js/document) "Pangglow")
-      (Nothing "Hi" ring-req 3 {:a 4}))))

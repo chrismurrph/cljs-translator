@@ -2,11 +2,9 @@
   (:require
    #?(:cljs [hyperfiddle.electric-client3])
    #?(:clj [electric-starter-app.server-jetty :as jetty])
-   #?(:clj [restaurant.css :as css])
    #?(:clj [shadow.cljs.devtools.api :as shadow])
    #?(:clj [shadow.cljs.devtools.server :as shadow-server])
    #?(:clj [clojure.tools.logging :as log])
-   #?(:clj [clj-reload.core :as reload])
    clojure.edn
    [hyperfiddle.electric3 :as e]
    [electric-starter-app.main :as configurable-main]))
@@ -37,21 +35,6 @@
        (comment (.stop server))
        )))
 
-;; #?(:cljs ;; Client Entrypoint
-;;    (do
-;;      (def electric-entrypoint (e/boot-client {} configurable-main/Main (e/server (e/amb))))
-
-;;      (defonce reactor nil)
-
-;;      (defn ^:dev/after-load ^:export start! []
-;;        (set! reactor (electric-entrypoint
-;;                        #(js/console.log "Reactor success:" %)
-;;                        #(js/console.error "Reactor failure:" %))))
-
-;;      (defn ^:dev/before-load stop! []
-;;        (when reactor (reactor)) ; stop the reactor
-;;        (set! reactor nil))))
-
 #?(:cljs ;; Client Entrypoint
    (do
      (defonce reactor nil)
@@ -64,4 +47,3 @@
      (defn ^:dev/before-load stop! []
        (when reactor (reactor)) ; stop the reactor
        (set! reactor nil))))
-

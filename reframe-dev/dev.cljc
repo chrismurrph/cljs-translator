@@ -5,24 +5,13 @@
    #?(:clj [shadow.cljs.devtools.api :as shadow])
    #?(:clj [shadow.cljs.devtools.server :as shadow-server])
    #?(:clj [clojure.tools.logging :as log])
-   #?(:clj [clj-reload.core :as reload])
    clojure.edn))
-
-#?(:clj (reload/init
-          {:dirs ["reframe-dev" "reframe-examples"]}))
 
 ;;
 ;; After have started the REPL. Starts whichever app was configured in configurable-main
 ;;
 (comment
   (-main)) ; repl entrypoint
-
-;;
-;; Ctrl+S to save and
-;; Ctrl+R to reload (only when have a REPL with :dev alias) (so don't need to do it here)
-;;
-(comment
-  #?(:clj (reload/reload)))
 
 #?(:clj ;; Server Entrypoint
    (do
