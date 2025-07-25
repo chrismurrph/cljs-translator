@@ -7,53 +7,47 @@
 
 (defn- electric-name->view-name
   "Convert Electric function name to Re-frame view name.
-   Note: This adds -view suffix. If you don't want the suffix, use electric-name->kebab-case"
-  [electric-name]
-  (let [name-str (name electric-name)
-        ;; Convert CamelCase to kebab-case
-        kebab-case (-> name-str
-                       (str/replace #"([a-z])([A-Z])" "$1-$2")
-                       (str/lower-case))]
-    (symbol (str kebab-case "-view"))))
-
-(defn- electric-name->kebab-case
-  "Convert Electric CamelCase name to kebab-case (without -view suffix)"
+   e.g. TodoItem -> todo-item-view"
   [electric-name]
   (-> (name electric-name)
       (str/replace #"([a-z])([A-Z])" "$1-$2")
-      (str/lower-case)
+      str/lower-case
+      (str "-view")
+      symbol))
+
+(defn- electric-name->kebab-case
+  "Convert Electric function name to kebab case.
+   e.g. TodoItem -> todo-item"
+  [electric-name]
+  (-> (name electric-name)
+      (str/replace #"([a-z])([A-Z])" "$1-$2")
+      str/lower-case
       symbol))
 
 (defn- dom-element?
-  "Check if a node represents a DOM element call"
+  "Check if a zipper location is a DOM element call"
   [zloc]
-  (when (z/list? zloc)
-    (when-let [first-child (z/down zloc)]
-      (and (z/sexpr-able? first-child)
-           (symbol? (z/sexpr first-child))
-           (str/starts-with? (str (z/sexpr first-child)) "dom/")))))
+  (and (z/list? zloc)
+       (when-let [first-child (z/down zloc)]
+         (let [sym (z/sexpr first-child)]
+           (and (symbol? sym)
+                (str/starts-with? (str sym) "dom/"))))))
 
 (defn- extract-tag-name
-  "Extract HTML tag name from dom/tag symbol"
+  "Extract HTML tag name from dom/element symbol"
   [dom-symbol]
-  (-> (str dom-symbol)
-      (str/split #"/")
-      second
-      keyword))
+  (keyword (subs (str dom-symbol) 4)))
 
 (declare translate-dom-element)
 
 (defn- component-call?
-  "Check if a node represents a component call (not a dom/ or binding call)"
+  "Check if a form is a component call (starts with uppercase)"
   [zloc]
-  (when (z/list? zloc)
-    (when-let [first-child (z/down zloc)]
-      (and (z/sexpr-able? first-child)
-           (symbol? (z/sexpr first-child))
-           (let [sym-str (str (z/sexpr first-child))]
-             (and (not (str/includes? sym-str "/"))
-                  (not= sym-str "binding")
-                  (Character/isUpperCase (first sym-str))))))))
+  (and (z/list? zloc)
+       (when-let [first-child (z/down zloc)]
+         (let [sym (z/sexpr first-child)]
+           (and (symbol? sym)
+                (Character/isUpperCase (first (name sym))))))))
 
 (defn- translate-component-call
   "Translate a component call from (ComponentName args) to [component-name-view args]"
@@ -140,196 +134,187 @@
     nil))
 
 (defn- find-client-binding-body
-  "Find the body expressions inside (e/client ...).
-   Handles two cases:
-   1. (e/client (binding [...] body...))
-   2. (e/client body...)"
-  [zloc]
-  (when-let [client-node (z/find zloc z/next
-                                 #(and (z/list? %)
-                                       (= 'e/client (z/sexpr (z/down %)))))]
-    (let [first-child (z/right (z/down client-node))]
-      (cond
-        ;; Case 1: (e/client (binding [...] body...))
-        (and (z/list? first-child)
-             (= 'binding (z/sexpr (z/down first-child))))
-        (when-let [binding-vec (z/right (z/down first-child))]
-          (loop [node (z/right binding-vec)
+  "Find body expressions inside (e/client (binding [...] body...)) or (e/client body...)"
+  [edefn-zloc]
+  (when-let [client-zloc (z/find-value edefn-zloc z/next 'e/client)]
+    (when-let [client-form (z/up client-zloc)]
+      ;; Check if next element is a binding form
+      (let [first-in-client (z/down (z/right client-zloc))]
+        (if (and first-in-client
+                 (= 'binding (z/sexpr first-in-client)))
+          ;; Has binding - get body after binding vector
+          (let [binding-form (z/up first-in-client)
+                binding-vec (z/right (z/down binding-form))]
+            ;; Everything after binding vec is body
+            (loop [node (z/right binding-vec)
+                   bodies []]
+              (if node
+                (recur (z/right node) (conj bodies node))
+                bodies)))
+          ;; No binding - everything after e/client is body
+          (loop [node (z/right client-zloc)
                  bodies []]
             (if node
               (recur (z/right node) (conj bodies node))
-              bodies)))
-
-        ;; Case 2: (e/client body...)
-        :else
-        (loop [node first-child
-               bodies []]
-          (if node
-            (recur (z/right node) (conj bodies node))
-            bodies))))))
+              bodies)))))))
 
 (defn- extract-function-params
-  "Extract parameters from an e/defn form"
+  "Extract parameter vector from an e/defn zipper location"
   [defn-zloc]
-  ;; defn-zloc is positioned at e/defn
-  ;; Move right to get name, then right again to get params
   (when-let [name-zloc (z/right defn-zloc)]
     (when-let [params-zloc (z/right name-zloc)]
-      (when (z/vector? params-zloc)
-        (z/sexpr params-zloc)))))
+      (z/sexpr params-zloc))))
 
 (defn- find-dependencies
-  "Find all function and variable dependencies in a form"
+  "Find all user-defined function dependencies in a form, excluding:
+   - Local bindings and parameters
+   - Electric framework functions (dom/*, e/*, svg/*)
+   - Clojure core functions
+   - Special forms (def, defn, let, binding, etc.)"
   [form]
-  (let [deps (atom #{})
-        ;; Stack of local binding contexts
-        locals-stack (atom [#{}])
-        ;; Track the current function being defined
-        current-fn (atom nil)]
-
-    ;; First pass - identify if this is a defn/def and get its name
+  (let [bindings (atom #{})
+        deps (atom #{})
+        ;; Common Clojure special forms and core functions to exclude
+        core-forms #{'def 'defn 'defn- 'let 'let* 'fn 'fn* 'loop 'loop*
+                     'binding 'if 'when 'cond 'or 'and 'not '=
+                     'str '+ '- '* '/ 'into 'conj 'assoc 'dissoc
+                     'vec 'list 'map 'filter 'reduce 'apply 'partial
+                     'comp 'identity 'do 'quote 'var 'recur 'throw
+                     'try 'catch 'finally 'new 'set! 'ns 'require
+                     'read-string 'true 'false 'nil}]
+    
+    ;; Extract parameters from the form if it's a function definition
     (when (and (seq? form)
-               (contains? #{'defn 'def} (first form))
-               (symbol? (second form)))
-      (reset! current-fn (second form)))
-
-    ;; For defn, add parameters to initial locals
-    (when (and (seq? form)
-               (= 'defn (first form))
+               (or (= 'defn (first form)) (= 'e/defn (first form)))
                (vector? (nth form 2 nil)))
-      (let [params (nth form 2)]
-        ;; Extract all parameter names (including from destructuring)
-        (letfn [(extract-params [p]
-                  (cond
-                    (symbol? p) (when (not= p '&) #{p})
-                    (vector? p) (reduce into #{} (map extract-params p))
-                    (map? p) (reduce into #{}
-                                     (concat
-                                      (map extract-params (vals p))
-                                      (when-let [as (:as p)] [as])
-                                      (when-let [keys (:keys p)] keys)
-                                      (when-let [strs (:strs p)] (map symbol strs))
-                                      (when-let [syms (:syms p)] syms)))
-                    :else #{}))]
-          (swap! locals-stack conj (extract-params params)))))
-
-    (letfn [(current-locals []
-              (reduce into #{} @locals-stack))
-
-            (analyze-form [x]
-              (cond
-                ;; Track let/loop bindings
-                (and (seq? x)
-                     (contains? #{'let 'loop} (first x))
-                     (vector? (second x)))
-                (let [bindings (second x)
-                      new-locals (atom #{})]
-                  ;; Extract binding names
-                  (doseq [[binding _] (partition 2 bindings)]
-                    (cond
-                      (symbol? binding) (swap! new-locals conj binding)
-                      (vector? binding) (doseq [b binding]
-                                          (when (symbol? b)
-                                            (swap! new-locals conj b)))
-                      (map? binding) (doseq [[k v] binding]
-                                       (when (and (= k :as) (symbol? v))
-                                         (swap! new-locals conj v)))))
-                  ;; Push new locals context
-                  (swap! locals-stack conj @new-locals)
-                  ;; Analyze the binding values and body
-                  (doseq [[_ val] (partition 2 bindings)]
-                    (walk/prewalk analyze-form val))
-                  (doseq [body-form (drop 2 x)]
-                    (walk/prewalk analyze-form body-form))
-                  ;; Pop locals context
-                  (swap! locals-stack pop)
-                  x)
-
-                ;; Component calls in vectors
-                (and (vector? x)
-                     (pos? (count x))
-                     (symbol? (first x))
-                     (not= (first x) @current-fn)
-                     (not ((current-locals) (first x))))
-                (do (swap! deps conj (first x))
-                    x)
-
-                ;; Function calls (including namespaced like r-ui/pixelate)
-                (and (seq? x)
-                     (symbol? (first x))
-                     (not= (first x) @current-fn)
-                     (not ((current-locals) (first x)))
-                     (not (contains? #{'defn 'def 'let 'let* 'fn 'fn* 'loop 'loop*
-                                       'binding 'if 'when 'cond 'or 'and 'not '=
-                                       'str '+ '- '* '/ 'into 'conj 'assoc 'dissoc
-                                       'vec 'list 'map 'filter 'reduce 'apply 'partial
-                                       'comp 'identity 'do 'quote 'var 'recur} (first x))))
-                (do (swap! deps conj (first x))
-                    x)
-
-                ;; Bare symbol references (not namespaced)
-                (and (symbol? x)
-                     (not= x @current-fn)
-                     (not (namespace x))
-                     (not ((current-locals) x))
-                     (not (contains? #{'defn 'def 'let 'let* 'fn 'fn* 'loop 'loop*
-                                       'binding 'if 'when 'cond 'or 'and 'not '=
-                                       'str '+ '- '* '/ 'true 'false 'nil '& 'do
-                                       'quote 'var 'throw 'try 'catch 'finally 'new
-                                       'set! 'recur 'ns 'require} x)))
-                (do (swap! deps conj x)
-                    x)
-
-                :else x))]
-
-      (walk/prewalk analyze-form form))
-
-    @deps))
+      (doseq [param (nth form 2)]
+        (when (symbol? param)
+          (swap! bindings conj param))))
+    
+    (walk/prewalk
+     (fn [x]
+       (cond
+         ;; Track local bindings in let/loop
+         (and (seq? x)
+              (contains? #{'let 'loop} (first x))
+              (vector? (second x)))
+         (do
+           (doseq [binding (take-nth 2 (second x))]
+             (when (symbol? binding)
+               (swap! bindings conj binding)))
+           x)
+         
+         ;; Track binding form
+         (and (seq? x)
+              (= 'binding (first x))
+              (vector? (second x)))
+         (do
+           (doseq [binding (take-nth 2 (second x))]
+             (when (symbol? binding)
+               (swap! bindings conj binding)))
+           x)
+         
+         ;; Function calls - (function-name ...)
+         (and (seq? x) 
+              (symbol? (first x)) 
+              (not (@bindings (first x)))
+              (not (core-forms (first x)))
+              ;; Exclude Electric/DOM framework functions
+              (not (str/starts-with? (str (first x)) "dom/"))
+              (not (str/starts-with? (str (first x)) "e/"))
+              (not (str/starts-with? (str (first x)) "svg/"))
+              ;; Include user-defined functions (either no namespace or user namespace)
+              (or (not (namespace (first x)))
+                  (and (namespace (first x))
+                       (not (contains? #{"dom" "e" "svg" "clojure.core"} (namespace (first x)))))))
+         (do
+           (swap! deps conj (first x))
+           x)
+         
+         ;; Bare symbol references - only if they look like user-defined constants
+         (and (symbol? x) 
+              (not (@bindings x))
+              (not (core-forms x))
+              ;; Only include if it's not namespaced
+              (not (namespace x))
+              ;; And it looks like a user constant (not single letters which are often params)
+              (> (count (str x)) 1))
+         (do
+           (swap! deps conj x)
+           x)
+         
+         :else x))
+     form)
+    ;; Remove self-references
+    (let [form-name (when (and (seq? form)
+                                (or (= 'defn (first form))
+                                    (= 'def (first form))
+                                    (= 'e/defn (first form))))
+                      (second form))]
+      (disj @deps form-name)))) 
 
 (defn- create-view-function
-  "Create a Re-frame view function from Electric body expressions"
+  "Create a Re-frame view function from Electric function components"
   [electric-name params body-zlocs]
-  ;; Use the appropriate naming convention
   (let [view-name (electric-name->view-name electric-name)
-        translated-bodies (map translate-dom-element body-zlocs)
-        view-form (if (= 1 (count translated-bodies))
-                    ;; Single element - no React Fragment needed
-                    (list 'defn view-name params
-                          (first translated-bodies))
-                    ;; Multiple elements - wrap in React Fragment
-                    (list 'defn view-name params
-                          (into [:<>] translated-bodies)))]
+        ;; Translate each body expression
+        body-elements (mapv translate-dom-element body-zlocs)
+        ;; Filter out nils
+        body-elements (remove nil? body-elements)
+        ;; Wrap multiple elements in React Fragment
+        view-body (if (= 1 (count body-elements))
+                    (first body-elements)
+                    (into [:<>] body-elements))
+        ;; Create the defn form with parameters
+        view-form (if (empty? params)
+                    `(~'defn ~view-name []
+                      ~view-body)
+                    `(~'defn ~view-name ~params
+                      ~view-body))
+        ;; Calculate dependencies
+        deps (find-dependencies view-form)]
     {:view view-form
      :name view-name
-     :deps (find-dependencies view-form)}))
+     :deps deps}))
 
 (defn- topological-sort
-  "Sort views by their dependencies"
-  [views]
-  (let [;; Create a map of name to view
-        view-map (into {} (map (juxt :name identity) views))
-        ;; Track visited and result
+  "Sort a collection of {:name ... :deps ...} maps topologically.
+   Items with no dependencies come first."
+  [items]
+  (let [;; Create a map of name -> item for easy lookup
+        item-map (into {} (map (juxt :name identity) items))
+        ;; Track visited nodes
         visited (atom #{})
-        result (atom [])]
-
-    (letfn [(visit [view-name]
-              (when-not (@visited view-name)
-                (swap! visited conj view-name)
-                (when-let [view (view-map view-name)]
-                  ;; Visit dependencies first
-                  (doseq [dep (:deps view)]
-                    (visit dep))
-                  ;; Then add this view
-                  (swap! result conj view))))]
-
-      ;; Visit all views
-      (doseq [view views]
-        (visit (:name view)))
-
-      ;; Add topo-sort numbers
-      (map-indexed (fn [idx view]
-                     (assoc view :topo-sort (inc idx)))
-                   @result))))
+        ;; Track nodes in current path (for cycle detection)
+        in-path (atom #{})
+        ;; Result accumulator
+        result (atom [])
+        
+        ;; DFS visit function
+        visit (fn visit [name]
+                (when-not (@visited name)
+                  (when (@in-path name)
+                    (throw (ex-info "Cycle detected in dependencies" {:node name})))
+                  (swap! in-path conj name)
+                  
+                  ;; Visit all dependencies first
+                  (when-let [item (item-map name)]
+                    (doseq [dep (:deps item)]
+                      (when (item-map dep) ; Only visit if dep is in our items
+                        (visit dep))))
+                  
+                  (swap! in-path disj name)
+                  (swap! visited conj name)
+                  
+                  ;; Add to result if it's one of our items
+                  (when-let [item (item-map name)]
+                    (swap! result conj (assoc item :topo-sort (inc (count @result)))))))]
+    
+    ;; Visit all items
+    (doseq [{:keys [name]} items]
+      (visit name))
+    
+    @result))
 
 (defn- translate-dom-forms
   "Translate a sequence of DOM forms (or a single form) to Hiccup.
@@ -357,81 +342,180 @@
      :deps (find-dependencies view)}))
 
 (defn- canonicalize-views
-  "Ensure all views are in canonical form"
+  "Ensure all views are in canonical AST format with :view, :name, :deps keys"
   [views]
   (mapv (fn [v]
           (if (map? v)
             v
-            ;; Convert simple form to canonical
+            ;; Convert raw form to canonical format
             {:view v
-             :name (second v)  ; Extract name from (defn name ...)
+             :name (if (and (seq? v) (= 'defn (first v)))
+                     (second v)
+                     'anonymous)
              :deps (find-dependencies v)}))
         views))
 
 (defn extract-simple-forms
-  "Extract just the view forms from canonical AST structures.
-   Given a vector of {:view form, :name symbol, :deps set, :topo-sort n} maps,
-   returns a vector of just the view forms."
+  "Extract just the view forms from canonical AST structures"
   [canonical-views]
   (mapv :view canonical-views))
 
 (defn write-forms-to-file!
-  "Write AST forms to a file with the given namespace.
-   Expects forms to be canonical AST structures with :view, :name, :deps, :topo-sort keys."
+  "Write a collection of AST forms to a file with proper formatting.
+   Forms should have :view, :name, and optionally :topo-sort keys."
   [ns-name ast-forms]
-  (let [ns-parts (str/split (str ns-name) #"\.")
-        ;; Get the base namespace (e.g., "reframe-output")
-        base-ns (first ns-parts)
-        ;; Create the nested directory structure
-        dir-parts (mapv #(str/replace % "-" "_") ns-parts)
-        ;; The file path includes both the hyphenated and underscored versions
-        file-path (str base-ns "/" (apply str (interpose "/" dir-parts)) ".cljs")
-        ;; Format namespace with require on new line
-        ns-form-str (if (str/ends-with? ns-name ".views")
-                       (str "(ns " ns-name "\n  (:require\n   [restaurant.ui :as r-ui]))")
-                       (str "(ns " ns-name ")"))
-        ;; Sort forms by topo-sort if they have it
-        sorted-forms (if (and (seq ast-forms)
-                              (:topo-sort (first ast-forms)))
+  (let [;; Convert hyphenated namespace to underscored subdirectory
+        ;; e.g. "reframe-output.views" -> "reframe-output/reframe_output/views.cljs"
+        [base-dir sub-ns] (str/split ns-name #"\." 2)
+        sub-dir (str/replace base-dir #"-" "_")
+        file-path (str base-dir "/" sub-dir "/" sub-ns ".cljs")
+        
+        ;; Extract unique namespace requires
+        requires (atom #{})
+        _ (walk/prewalk
+           (fn [form]
+             (when (and (symbol? form)
+                        (namespace form))
+               (swap! requires conj (symbol (namespace form))))
+             form)
+           (map :view ast-forms))
+        
+        ;; Build the namespace form
+        ns-form (if (empty? @requires)
+                  `(~'ns ~(symbol (str base-dir "." sub-ns)))
+                  `(~'ns ~(symbol (str base-dir "." sub-ns))
+                    (:require
+                     ~@(sort (map (fn [req]
+                                    [(symbol req) :as (symbol req)])
+                                  @requires)))))
+        
+        ;; Sort forms if they have :topo-sort
+        sorted-forms (if (every? #(contains? % :topo-sort) ast-forms)
                        (sort-by :topo-sort ast-forms)
                        ast-forms)
-        ;; Extract just the view forms
-        view-forms (extract-simple-forms sorted-forms)
-        ;; Format each form properly
+        
+        ;; Extract just the :view from each form
+        view-forms (mapv :view sorted-forms)
+        
+        ;; Custom formatting for defn to keep name on same line
+        ;; Custom formatting for defn to keep name on same line
+        ;; Custom formatting for defn to keep name on same line
         format-form (fn [form]
-                      (let [formatted
-                            (if (and (seq? form)
-                                     (= 'defn (first form))
-                                     (symbol? (second form)))
-                              ;; Special handling for defn to keep name on same line
-                              (let [[_ name params & body] form
-                                    formatted (with-out-str
-                                                (binding [pp/*print-right-margin* 80]
-                                                  (pp/pprint (cons 'defn (cons name (cons params body))))))]
-                                ;; Replace the first newline after defn with a space
-                                (str/replace-first formatted #"^(\(defn)\n\s*" "$1 "))
-                              ;; Use regular pprint for other forms
-                              (with-out-str (pp/pprint form)))]
-                        ;; Trim trailing newline
-                        (str/trim-newline formatted)))
-        ;; Build the file content
-        file-content (str ns-form-str
-                          "\n\n"  ; Blank line after namespace
-                          (str/join "\n\n" (map format-form view-forms)))
-        ;; Create directory if needed
-        file (clojure.java.io/file file-path)
-        parent-dir (.getParentFile file)]
-    (when parent-dir
+                      (if (and (seq? form) (= 'defn (first form)))
+                        (let [[_ name params & body] form]
+                          (with-out-str
+                            (print (str "(defn " name))
+                            (when params
+                              (print " ")
+                              (pr params))
+                            (doseq [expr body]
+                              (println)
+                              (print "  ")
+                              (pp/pprint expr))
+                            (print ")")))  ;; Add the closing paren!
+                        (with-out-str (pp/pprint form)))) 
+        
+        ;; Format the file content
+        file-content (with-out-str
+                       (pp/pprint ns-form)
+                       (println)
+                       (doseq [form view-forms]
+                         (print (format-form form))
+                         (println)))]
+    
+    ;; Ensure directory exists
+    (let [file (clojure.java.io/file file-path)
+          parent-dir (.getParentFile file)]
       (.mkdirs parent-dir))
     (spit file-path file-content)))
 
+(defn read-file-forms
+  "Read a file and extract Electric forms starting from a specific function and its dependencies.
+   
+   Returns a vector of {:form electric-form, :name symbol, :type keyword} in dependency order.
+   Only includes the starting function and its transitive dependencies.
+   
+   Form types:
+   - :e/defn - Electric function definitions
+   - :defn - Regular Clojure functions
+   - :def - Regular Clojure defs
+   
+   Example:
+   (read-file-forms \"path/to/file.cljc\" \"Main\")
+   ;; => [{:form (def customer-columns-xs [100 70 70]), :name customer-columns-xs, :type :def}
+   ;;     {:form (defn generate-absolute-style ...), :name generate-absolute-style, :type :defn}
+   ;;     {:form (e/defn LabelAndAmount ...), :name LabelAndAmount, :type :e/defn}
+   ;;     {:form (e/defn Main ...), :name Main, :type :e/defn}]"
+  [file-path starting-fn-name]
+  (let [zloc (z/of-file file-path)
+        starting-sym (symbol starting-fn-name)
+        ;; First collect ALL forms in the file
+        all-forms-map (loop [loc zloc
+                             result {}]
+                        (if-let [form-loc (z/find-tag loc z/next :list)]
+                          (let [first-sym (when (z/down form-loc)
+                                            (z/sexpr (z/down form-loc)))]
+                            (cond
+                              ;; e/defn form
+                              (= 'e/defn first-sym)
+                              (let [name-loc (z/right (z/down form-loc))
+                                    electric-name (z/sexpr name-loc)
+                                    form (z/sexpr form-loc)
+                                    deps (find-dependencies form)]
+                                (recur (z/right form-loc) 
+                                       (assoc result electric-name 
+                                              {:form form
+                                               :name electric-name
+                                               :type :e/defn
+                                               :deps deps})))
+
+                              ;; Regular defn or def
+                              (or (= 'defn first-sym) (= 'def first-sym))
+                              (let [form (z/sexpr form-loc)
+                                    name-sym (second form)
+                                    deps (find-dependencies form)]
+                                (recur (z/right form-loc)
+                                       (assoc result name-sym 
+                                              {:form form
+                                               :name name-sym
+                                               :type (if (= 'defn first-sym) :defn :def)
+                                               :deps deps})))
+
+                              :else
+                              (recur (z/next form-loc) result)))
+                          result))
+        ;; Now collect only the starting function and its dependencies
+        collected (atom #{})
+        to-collect (atom [starting-sym])]
+    
+    ;; Collect transitively
+    (while (seq @to-collect)
+      (let [current (first @to-collect)]
+        (swap! to-collect rest)
+        (when-not (@collected current)
+          (swap! collected conj current)
+          (when-let [form-data (all-forms-map current)]
+            (swap! to-collect into (:deps form-data))))))
+    
+    ;; Get the forms we need and apply topological sort
+    (let [needed-forms (filter #(@collected (:name %)) (vals all-forms-map))]
+      (topological-sort needed-forms))))
+
 (defn translate
   "Translate Electric code to Re-frame components.
+   
    Accepts either:
-   - A file path and starting function: \"path/to/file.cljc\" \"Main\"
+   - A vector of forms from read-file-forms (already sorted topologically)
    - An e/defn form: (e/defn Name [...] ...)
    - A single DOM form: (dom/div ...)
    - Multiple DOM forms: ((dom/h1 ...) (dom/p ...))
+   
+   When first arg is a vector:
+   - Second arg is the starting function name (ignored since vector is pre-filtered)
+   - Third arg is optional output-ns for file writing
+   
+   When first arg is a form:
+   - Second arg is optional output-ns for file writing
 
    Returns a map with :views, :events, and :subs keys.
    The :views value is a vector of canonical AST maps, each containing:
@@ -440,81 +524,55 @@
    - :deps   - set of dependencies
    - :topo-sort - topological sort order (when applicable)
 
-   Use extract-simple-forms to get just the view forms.
-
-   Optional output-ns parameter writes the forms to files."
-  ([first-arg]
-   (translate first-arg nil nil))
-  ([first-arg second-arg]
-   (if (string? first-arg)
-     ;; File path case - second arg is starting function
-     (translate first-arg second-arg nil)
-     ;; Electric code case - second arg is output-ns
-     (translate first-arg nil second-arg)))
-  ([file-path-or-code starting-fn-name output-ns]
-   (let [;; Determine if we're dealing with a file or direct code
-         is-file-path? (string? file-path-or-code)
+   Use extract-simple-forms to get just the view forms."
+  ([forms-or-code]
+   (translate forms-or-code nil nil))
+  ([forms-or-code second-arg]
+   (if (vector? forms-or-code)
+     ;; Vector of forms case - second arg is starting function name (ignored)
+     (translate forms-or-code second-arg nil)
+     ;; Direct code case - second arg is output-ns
+     (translate forms-or-code nil second-arg)))
+  ([forms-or-code starting-fn-name output-ns]
+   (let [;; Determine if we're dealing with a forms vector or direct code
+         is-forms-vector? (vector? forms-or-code)
 
          ;; Process based on input type - always work with canonical form
-         canonical-result (if is-file-path?
-                            ;; FILE PATH CASE
-                            (let [file-path file-path-or-code
-                                  zloc (z/of-file file-path)
-                                  starting-sym (symbol starting-fn-name)
-                                  ;; First, collect ALL forms in the file for dependency resolution
-                                  all-forms-map (loop [loc zloc
-                                                       result {}]
-                                                  (if-let [form-loc (z/find-tag loc z/next :list)]
-                                                    (let [first-sym (when (z/down form-loc)
-                                                                      (z/sexpr (z/down form-loc)))]
-                                                      (cond
-                                                        ;; e/defn form - translate to view
-                                                        (= 'e/defn first-sym)
-                                                        (let [name-loc (z/right (z/down form-loc))
-                                                              electric-name (z/sexpr name-loc)
-                                                              params (extract-function-params (z/down form-loc))
-                                                              body-locs (find-client-binding-body form-loc)
-                                                              view-data (create-view-function electric-name (or params []) (or body-locs []))]
-                                                          (recur (z/right form-loc) (assoc result (:name view-data) view-data)))
+         canonical-result (if is-forms-vector?
+                            ;; FORMS VECTOR CASE - from read-file-forms
+                            (let [;; Translate each form based on its type
+                                  translated-views 
+                                  (mapv (fn [{:keys [form name type]}]
+                                          (case type
+                                            :e/defn
+                                            ;; Extract the Electric function components
+                                            (let [params (extract-function-params (z/down (z/of-string (pr-str form))))
+                                                  ;; Find body - try e/client first, then direct body
+                                                  form-zloc (z/of-string (pr-str form))
+                                                  body-zlocs (or (find-client-binding-body form-zloc)
+                                                                 ;; If no e/client, get body after params
+                                                                 (let [defn-zloc (z/find-value form-zloc z/next 'e/defn)
+                                                                       name-zloc (z/right defn-zloc)
+                                                                       params-vec-zloc (z/right name-zloc)]
+                                                                   (loop [node (z/right params-vec-zloc)
+                                                                          bodies []]
+                                                                     (if node
+                                                                       (recur (z/right node) (conj bodies node))
+                                                                       bodies))))]
+                                              (create-view-function name (or params []) (or body-zlocs [])))
+                                            
+                                            ;; Regular defn or def - include as-is
+                                            (:defn :def)
+                                            {:view form
+                                             :name name
+                                             :deps (find-dependencies form)}))
+                                        forms-or-code)]
+                              {:views translated-views
+                               :events []
+                               :subs []})
 
-                                                        ;; Regular defn or def - include as-is
-                                                        (or (= 'defn first-sym) (= 'def first-sym))
-                                                        (let [form (z/sexpr form-loc)
-                                                              name-sym (second form)
-                                                              deps (find-dependencies form)]
-                                                          (recur (z/right form-loc)
-                                                                 (assoc result name-sym {:view form
-                                                                                         :name name-sym
-                                                                                         :deps deps})))
-
-                                                        :else
-                                                        (recur (z/next form-loc) result)))
-                                                    result))
-                                  ;; Now collect only the starting function and its dependencies
-                                  ;; Use kebab-case version of the starting function name
-                                  starting-view-name (electric-name->view-name starting-sym)
-                                  collected (atom #{})
-                                  to-collect (atom [starting-view-name])]
-
-                              ;; Collect transitively
-                              (while (seq @to-collect)
-                                (let [current (first @to-collect)]
-                                  (swap! to-collect rest)
-                                  (when-not (@collected current)
-                                    (swap! collected conj current)
-                                    (when-let [form-data (all-forms-map current)]
-                                      (swap! to-collect into (:deps form-data))))))
-
-                              ;; Get the forms we actually need
-                              (let [needed-forms (filter #(@collected (:name %)) (vals all-forms-map))
-                                    ;; Apply topological sort
-                                    sorted-views (topological-sort needed-forms)]
-                                {:views sorted-views
-                                 :events []
-                                 :subs []}))
-
-                            ;; ELECTRIC CODE CASE
-                            (let [electric-code file-path-or-code
+                            ;; ELECTRIC CODE CASE - direct forms
+                            (let [electric-code forms-or-code
                                   code-str (pr-str electric-code)
                                   zloc (z/of-string code-str)
                                   ;; Check if it's an e/defn form
@@ -525,14 +583,23 @@
                                                  electric-name (z/sexpr name-zloc)
                                                  ;; Get the parameters
                                                  params (extract-function-params defn-zloc)
-                                                 ;; Find body expressions
-                                                 body-zlocs (find-client-binding-body (z/up defn-zloc))
+                                                 ;; Find body expressions - first try e/client, then direct body
+                                                 edefn-form (z/up defn-zloc)
+                                                 body-zlocs (or (find-client-binding-body edefn-form)
+                                                                ;; If no e/client, get body after params
+                                                                (let [params-zloc (z/find-value edefn-form z/next electric-name)
+                                                                      params-vec-zloc (z/right params-zloc)]
+                                                                  (loop [node (z/right params-vec-zloc)
+                                                                         bodies []]
+                                                                    (if node
+                                                                      (recur (z/right node) (conj bodies node))
+                                                                      bodies))))
                                                  ;; Create view with metadata
                                                  view-data (create-view-function electric-name (or params []) (or body-zlocs []))]
 
                                              {:views [(assoc view-data :topo-sort 1)]
                                               :events []
-                                              :subs []})
+                                              :subs []}) 
                                            ;; Not an e/defn - assume it's DOM form(s)
                                            (let [view-data (translate-dom-forms electric-code)]
                                              {:views [(assoc view-data :topo-sort 1)]
@@ -552,12 +619,15 @@
      ;; Return canonical AST structure
      canonical-result)))
 
+; Removed unused translate-file function
+
 (comment
   ;; Returns canonical AST structure
   (translate "electric-src/electric_starter_app/main.cljc" "Main" "reframe-output")
-  ;; => {:views [{:view (defn ...), :name main-view, :deps #{...}, :topo-sort 1} ...]}
-
-  ;; To get just the forms:
+  
+  ;; Just translate without writing
+  (translate "electric-src/electric_starter_app/main.cljc" "Main")
+  
+  ;; Get simple forms
   (extract-simple-forms (:views (translate "electric-src/electric_starter_app/main.cljc" "Main")))
-  ;; => [(defn main-view ...) ...]
   )

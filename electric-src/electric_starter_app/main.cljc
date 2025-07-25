@@ -41,20 +41,19 @@
 
 (e/defn LabelAndAmount
   [top left text-of-label amt]
-  (e/client
-    (dom/span
-      (dom/props {:style (generate-absolute-style top left)})
+  (dom/span
+    (dom/props {:style (generate-absolute-style top left)})
+    (dom/div
+      (dom/props {:class (->class :gen/row-indent)
+                  :style {:display "grid"
+                          :grid-template-columns (r-ui/line-columns customer-columns-xs)
+                          :padding "5px"}})
       (dom/div
-        (dom/props {:class (->class :gen/row-indent)
-                    :style {:display "grid"
-                            :grid-template-columns (r-ui/line-columns customer-columns-xs)
-                            :padding "5px"}})
-        (dom/div
-          (dom/props {:class (->class :wc/customer-desc)})
-          (dom/text text-of-label))
-        (dom/div
-          (dom/props {:class [(->class :wc/product-total-extension) (->class :gen/no-select)]})
-          (dom/text amt))))))
+        (dom/props {:class (->class :wc/customer-desc)})
+        (dom/text text-of-label))
+      (dom/div
+        (dom/props {:class [(->class :wc/product-total-extension) (->class :gen/no-select)]})
+        (dom/text amt)))))
 
 (e/defn Main [ring-req]
   (e/client

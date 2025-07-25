@@ -105,13 +105,68 @@
       (is (empty? (:events result)))
       (is (empty? (:subs result))))))
 
- (deftest test-current-translation-with-output
-  (testing "Current translation with components - writes to output files"
-    (let [;; Use translate with file path, starting function, AND output-ns
-          result (t/translate "electric-src/electric_starter_app/main.cljc" "Main" "reframe-output")
+ (deftest test-translation-with-output-2
+  (testing "Translation with components and dependencies"
+    (let [;; Hardcoded forms vector (what read-file-forms would return for "Main")
+          ;; Note: PaidLabel is NOT included because Main doesn't call it
+          ;; Forms are in topological order (dependencies first)
+          forms [{:form '(def customer-columns-xs [100 70 70]),
+                  :name 'customer-columns-xs,
+                  :type :def,
+                  :deps #{}}
+                 {:form '(defn ->class [_] ""),
+                  :name '->class,
+                  :type :defn,
+                  :deps #{}}
+                 {:form '(defn generate-absolute-style [top left]
+                           {:top (r-ui/pixelate top),
+                            :position "absolute",
+                            :left (r-ui/pixelate left)}),
+                  :name 'generate-absolute-style,
+                  :type :defn,
+                  :deps '#{r-ui/pixelate}}
+                 {:form '(e/defn LabelAndAmount [top left text-of-label amt]
+                           (e/client
+                             (dom/span
+                               (dom/props {:style (generate-absolute-style top left)})
+                               (dom/div
+                                 (dom/props
+                                   {:style
+                                    {:padding "5px",
+                                     :display "grid",
+                                     :grid-template-columns (r-ui/line-columns customer-columns-xs)},
+                                    :class (->class :gen/row-indent)})
+                                 (dom/div
+                                   (dom/props {:class (->class :wc/customer-desc)})
+                                   (dom/text text-of-label))
+                                 (dom/div
+                                   (dom/props
+                                     {:class
+                                      [(->class :wc/product-total-extension)
+                                       (->class :gen/no-select)]})
+                                   (dom/text amt)))))),
+                  :name 'LabelAndAmount,
+                  :type :e/defn,
+                  :deps '#{generate-absolute-style ->class customer-columns-xs r-ui/line-columns}}
+                 {:form (list 'e/defn 'Main '[ring-req]
+                          (list 'e/client
+                            (list 'binding ['dom/node nil
+                                            'e/http-request (list 'e/server 'ring-req)]
+                              (list 'dom/div
+                                '(LabelAndAmount 0 0 "Some text" 20)
+                                (list 'dom/h1 '(dom/text "Hello from Electric Clojure"))
+                                (list 'dom/p '(dom/text "Source code for this page is in ")
+                                  (list 'dom/code '(dom/text "src/electric_start_app/main.cljc")))
+                                (list 'dom/p '(dom/text "Make sure you check the ")
+                                  (list 'dom/a (list 'dom/props {:target "_blank", :href "https://electric.hyperfiddle.net/"})
+                                    '(dom/text "Electric Tutorial"))))))),
+                  :name 'Main,
+                  :type :e/defn,
+                  :deps '#{LabelAndAmount}}]
+          result (t/translate forms "Main")
           views (t/extract-simple-forms (:views result))
 
-          ;; Expected views - matching what the translator produces
+          ;; Expected views - in topological order
           expected-views ['(def customer-columns-xs [100 70 70])
 
                           '(defn ->class [_] "")
@@ -150,5 +205,108 @@
       (is (= 5 (count views)))
 
       ;; Verify each view matches expected output
-      (is (= expected-views views))
-      )))
+      (is (= expected-views views)))))
+
+ ; Removed duplicate test-translation-with-output-2
+
+ (deftest test-current-translation-with-output
+  (testing "Current translation handles e/defn without e/client wrapper - writes to output files"
+    (let [;; Hardcoded forms vector (what read-file-forms would return for "Main")
+          ;; Note: PaidLabel is NOT included because Main doesn't call it
+          ;; Forms are in topological order (dependencies first)
+          forms [{:form '(def customer-columns-xs [100 70 70]),
+                  :name 'customer-columns-xs,
+                  :type :def,
+                  :deps #{}}
+                 {:form '(defn ->class [_] ""),
+                  :name '->class,
+                  :type :defn,
+                  :deps #{}}
+                 {:form '(defn generate-absolute-style [top left]
+                           {:top (r-ui/pixelate top),
+                            :position "absolute",
+                            :left (r-ui/pixelate left)}),
+                  :name 'generate-absolute-style,
+                  :type :defn,
+                  :deps '#{r-ui/pixelate}}
+                 {:form '(e/defn LabelAndAmount [top left text-of-label amt]
+                           (dom/span
+                            (dom/props {:style (generate-absolute-style top left)})
+                            (dom/div
+                             (dom/props
+                              {:style
+                               {:padding "5px",
+                                :display "grid",
+                                :grid-template-columns (r-ui/line-columns customer-columns-xs)},
+                               :class (->class :gen/row-indent)})
+                             (dom/div
+                              (dom/props {:class (->class :wc/customer-desc)})
+                              (dom/text text-of-label))
+                             (dom/div
+                              (dom/props
+                               {:class
+                                [(->class :wc/product-total-extension)
+                                 (->class :gen/no-select)]})
+                              (dom/text amt))))),
+                  :name 'LabelAndAmount,
+                  :type :e/defn,
+                  :deps '#{generate-absolute-style ->class customer-columns-xs r-ui/line-columns}}
+                 {:form (list 'e/defn 'Main '[ring-req]
+                          (list 'e/client
+                            (list 'binding ['dom/node nil
+                                            'e/http-request (list 'e/server 'ring-req)]
+                              (list 'dom/div
+                               '(LabelAndAmount 0 0 "Some text" 20)
+                               (list 'dom/h1 '(dom/text "Hello from Electric Clojure"))
+                               (list 'dom/p '(dom/text "Source code for this page is in ")
+                                 (list 'dom/code '(dom/text "src/electric_start_app/main.cljc")))
+                               (list 'dom/p '(dom/text "Make sure you check the ")
+                                 (list 'dom/a (list 'dom/props {:target "_blank", :href "https://electric.hyperfiddle.net/"})
+                                   '(dom/text "Electric Tutorial"))))))),
+                  :name 'Main,
+                  :type :e/defn,
+                  :deps '#{LabelAndAmount}}]
+          result (t/translate forms "Main" "reframe-output")
+          views (t/extract-simple-forms (:views result))
+
+          ;; Expected views - in topological order
+          expected-views ['(def customer-columns-xs [100 70 70])
+
+                          '(defn ->class [_] "")
+
+                          '(defn generate-absolute-style [top left]
+                             {:position "absolute"
+                              :top (r-ui/pixelate top)
+                              :left (r-ui/pixelate left)})
+
+                          '(defn label-and-amount-view [top left text-of-label amt]
+                             [:span
+                              {:style (generate-absolute-style top left)}
+                              [:div
+                               {:class (->class :gen/row-indent)
+                                :style {:display "grid"
+                                        :grid-template-columns (r-ui/line-columns customer-columns-xs)
+                                        :padding "5px"}}
+                               [:div
+                                {:class (->class :wc/customer-desc)}
+                                text-of-label]
+                               [:div
+                                {:class [(->class :wc/product-total-extension) (->class :gen/no-select)]}
+                                amt]]])
+
+                          '(defn main-view [ring-req]
+                             [:div
+                              [label-and-amount-view 0 0 "Some text" 20]
+                              [:h1 "Hello from Electric Clojure"]
+                              [:p "Source code for this page is in "
+                               [:code "src/electric_start_app/main.cljc"]]
+                              [:p "Make sure you check the "
+                               [:a {:href "https://electric.hyperfiddle.net/" :target "_blank"}
+                                "Electric Tutorial"]]])]]
+
+      ;; Verify we got the expected functions
+      (is (= 5 (count views)))
+
+      ;; Verify each view matches expected output
+      (is (= expected-views views)))))
+
