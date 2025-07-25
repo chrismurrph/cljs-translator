@@ -4,7 +4,7 @@
            }
  :paths   ["electric-src" "resources"]
  :aliases {:nrepl
-           {:extra-paths ["src" "test" "reframe-examples" "reframe-output"]
+           {:extra-paths ["src" "reframe-examples" "reframe-output"]
             :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}
             ;; this allows nrepl to interrupt runaway repl evals
             :jvm-opts ["-Djdk.attach.allowAttachSelf"]
@@ -26,7 +26,7 @@
                                                           :exclusions  [com.google.guava/guava
                                                                         org.slf4j/slf4j-nop]}}}
            :reframe-dev
-           {:extra-paths ["reframe-dev" "reframe-examples"]
+           {:extra-paths ["reframe-dev" "reframe-examples" "src"]
             :extra-deps {
                          #_#_cljsjs/react      {:mvn/version "17.0.2-0"}
                          #_#_cljsjs/react-dom  {:mvn/version "17.0.2-0"}
