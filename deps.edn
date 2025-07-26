@@ -1,7 +1,7 @@
 {:deps    {org.clojure/clojure            {:mvn/version "1.12.0-alpha5"}
            rewrite-clj/rewrite-clj        {:mvn/version "1.1.47"}
            dev.weavejester/cljfmt         {:mvn/version "0.13.1"}
-           }
+           borkdude/edamame               {:mvn/version "1.4.25"}}
  :paths   ["electric-src" "resources"]
  :aliases {:nrepl
            {:extra-paths ["src" "reframe-examples" "reframe-output"]

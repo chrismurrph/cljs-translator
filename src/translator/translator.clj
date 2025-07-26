@@ -3,7 +3,8 @@
             [rewrite-clj.node :as n]
             [clojure.string :as str]
             [clojure.pprint :as pp]
-            [clojure.walk :as walk]))
+            [clojure.walk :as walk]
+            [cljfmt.core :as fmt]))
 
 (defn- electric-name->view-name
   "Convert Electric function name to Re-frame view name.
@@ -127,6 +128,28 @@
         (into [tag-name] children)))
 
     ;; For other nodes, try to get sexpr
+    ;; Handle let forms - translate the body
+    (and (z/list? zloc)
+         (= 'let (z/sexpr (z/down zloc))))
+    (let [let-sym-zloc (z/down zloc)
+          bindings-zloc (z/right let-sym-zloc)
+          ;; Move to the body forms after bindings
+          body-start (z/right bindings-zloc)
+          ;; Translate all body forms
+          translated-body (loop [current body-start
+                                result []]
+                           (if current
+                             (recur (z/right current)
+                                    (conj result (translate-dom-element current)))
+                             result))
+          ;; Filter out nils
+          translated-body (remove nil? translated-body)]
+      ;; Reconstruct the let form with translated body
+      (if (= 1 (count translated-body))
+        `(~'let ~(z/sexpr bindings-zloc) ~@translated-body)
+        `(~'let ~(z/sexpr bindings-zloc) ~@translated-body)))
+
+    ;; For other nodes, try to get sexpr
     (z/sexpr-able? zloc)
     (z/sexpr zloc)
 
@@ -182,7 +205,7 @@
                      'comp 'identity 'do 'quote 'var 'recur 'throw
                      'try 'catch 'finally 'new 'set! 'ns 'require
                      'read-string 'true 'false 'nil}]
-    
+
     ;; Extract parameters from the form if it's a function definition
     (when (and (seq? form)
                (or (= 'defn (first form)) (= 'e/defn (first form)))
@@ -190,7 +213,7 @@
       (doseq [param (nth form 2)]
         (when (symbol? param)
           (swap! bindings conj param))))
-    
+
     (walk/prewalk
      (fn [x]
        (cond
@@ -203,7 +226,7 @@
              (when (symbol? binding)
                (swap! bindings conj binding)))
            x)
-         
+
          ;; Track binding form
          (and (seq? x)
               (= 'binding (first x))
@@ -213,10 +236,10 @@
              (when (symbol? binding)
                (swap! bindings conj binding)))
            x)
-         
+
          ;; Function calls - (function-name ...)
-         (and (seq? x) 
-              (symbol? (first x)) 
+         (and (seq? x)
+              (symbol? (first x))
               (not (@bindings (first x)))
               (not (core-forms (first x)))
               ;; Exclude Electric/DOM framework functions
@@ -230,9 +253,9 @@
          (do
            (swap! deps conj (first x))
            x)
-         
+
          ;; Bare symbol references - only if they look like user-defined constants
-         (and (symbol? x) 
+         (and (symbol? x)
               (not (@bindings x))
               (not (core-forms x))
               ;; Only include if it's not namespaced
@@ -242,7 +265,7 @@
          (do
            (swap! deps conj x)
            x)
-         
+
          :else x))
      form)
     ;; Remove self-references
@@ -251,7 +274,7 @@
                                     (= 'def (first form))
                                     (= 'e/defn (first form))))
                       (second form))]
-      (disj @deps form-name)))) 
+      (disj @deps form-name))))
 
 (defn- create-view-function
   "Create a Re-frame view function from Electric function components"
@@ -289,31 +312,31 @@
         in-path (atom #{})
         ;; Result accumulator
         result (atom [])
-        
+
         ;; DFS visit function
         visit (fn visit [name]
                 (when-not (@visited name)
                   (when (@in-path name)
                     (throw (ex-info "Cycle detected in dependencies" {:node name})))
                   (swap! in-path conj name)
-                  
+
                   ;; Visit all dependencies first
                   (when-let [item (item-map name)]
                     (doseq [dep (:deps item)]
                       (when (item-map dep) ; Only visit if dep is in our items
                         (visit dep))))
-                  
+
                   (swap! in-path disj name)
                   (swap! visited conj name)
-                  
+
                   ;; Add to result if it's one of our items
                   (when-let [item (item-map name)]
                     (swap! result conj (assoc item :topo-sort (inc (count @result)))))))]
-    
+
     ;; Visit all items
     (doseq [{:keys [name]} items]
       (visit name))
-    
+
     @result))
 
 (defn- translate-dom-forms
@@ -361,7 +384,7 @@
   (mapv :view canonical-views))
 
 (defn write-forms-to-file!
-  "Write a collection of AST forms to a file with proper formatting.
+  "Write a collection of AST forms to a file with proper formatting using cljfmt.
    Forms should have :view, :name, and optionally :topo-sort keys."
   [ns-name ast-forms]
   (let [;; Convert hyphenated namespace to underscored subdirectory
@@ -369,7 +392,7 @@
         [base-dir sub-ns] (str/split ns-name #"\." 2)
         sub-dir (str/replace base-dir #"-" "_")
         file-path (str base-dir "/" sub-dir "/" sub-ns ".cljs")
-        
+
         ;; Extract unique namespace requires
         requires (atom #{})
         _ (walk/prewalk
@@ -379,7 +402,7 @@
                (swap! requires conj (symbol (namespace form))))
              form)
            (map :view ast-forms))
-        
+
         ;; Build the namespace form
         ns-form (if (empty? @requires)
                   `(~'ns ~(symbol (str base-dir "." sub-ns)))
@@ -388,58 +411,47 @@
                      ~@(sort (map (fn [req]
                                     [(symbol req) :as (symbol req)])
                                   @requires)))))
-        
+
         ;; Sort forms if they have :topo-sort
         sorted-forms (if (every? #(contains? % :topo-sort) ast-forms)
                        (sort-by :topo-sort ast-forms)
                        ast-forms)
-        
+
         ;; Extract just the :view from each form
         view-forms (mapv :view sorted-forms)
-        
-        ;; Custom formatting for defn to keep name on same line
-        ;; Custom formatting for defn to keep name on same line
-        ;; Custom formatting for defn to keep name on same line
-        format-form (fn [form]
-                      (if (and (seq? form) (= 'defn (first form)))
-                        (let [[_ name params & body] form]
-                          (with-out-str
-                            (print (str "(defn " name))
-                            (when params
-                              (print " ")
-                              (pr params))
-                            (doseq [expr body]
-                              (println)
-                              (print "  ")
-                              (pp/pprint expr))
-                            (print ")")))  ;; Add the closing paren!
-                        (with-out-str (pp/pprint form)))) 
-        
-        ;; Format the file content
-        file-content (with-out-str
-                       (pp/pprint ns-form)
-                       (println)
-                       (doseq [form view-forms]
-                         (print (format-form form))
-                         (println)))]
-    
+
+        ;; Build the complete file content with proper formatting
+        ;; Use pprint to get initial structure with newlines
+        ns-str (with-out-str (pp/pprint ns-form))
+        forms-str (str/join "\n\n"
+                           (map #(with-out-str (pp/pprint %)) view-forms))
+
+        ;; Combine namespace and forms
+        unformatted-str (str ns-str "\n" forms-str)
+
+        ;; Use cljfmt with default settings
+        ;; This gives us standard Clojure formatting
+        formatted-str (fmt/reformat-string unformatted-str)]
+
     ;; Ensure directory exists
     (let [file (clojure.java.io/file file-path)
           parent-dir (.getParentFile file)]
       (.mkdirs parent-dir))
-    (spit file-path file-content)))
+
+    ;; Write the formatted content
+    (spit file-path formatted-str)))
 
 (defn read-file-forms
   "Read a file and extract Electric forms starting from a specific function and its dependencies.
-   
+
    Returns a vector of {:form electric-form, :name symbol, :type keyword} in dependency order.
    Only includes the starting function and its transitive dependencies.
-   
+
    Form types:
    - :e/defn - Electric function definitions
    - :defn - Regular Clojure functions
    - :def - Regular Clojure defs
-   
+
    Example:
    (read-file-forms \"path/to/file.cljc\" \"Main\")
    ;; => [{:form (def customer-columns-xs [100 70 70]), :name customer-columns-xs, :type :def}
@@ -447,73 +459,75 @@
    ;;     {:form (e/defn LabelAndAmount ...), :name LabelAndAmount, :type :e/defn}
    ;;     {:form (e/defn Main ...), :name Main, :type :e/defn}]"
   [file-path starting-fn-name]
-  (let [zloc (z/of-file file-path)
+  ;; Try a different approach - read the file content and parse it manually
+  (let [content (slurp file-path)
+        ;; Use edamame to parse with reader conditionals
+        forms (try
+                (require '[edamame.core :as e])
+                ((resolve 'edamame.core/parse-string-all) content {:features #{:cljs}
+                                                                      :read-cond :allow}) 
+                (catch Exception e
+                  ;; Fallback to reading forms one by one
+                  (println "edamame" {:e e})
+                  (let [rdr (clojure.lang.LineNumberingPushbackReader.
+                             (java.io.StringReader. content))]
+                    (binding [*read-eval* false]
+                      (loop [forms []]
+                        (let [form (try (read rdr) (catch Exception e ::eof))]
+                          (if (= ::eof form)
+                            forms
+                            (recur (conj forms form)))))))))
+
         starting-sym (symbol starting-fn-name)
-        ;; First collect ALL forms in the file
-        all-forms-map (loop [loc zloc
-                             result {}]
-                        (if-let [form-loc (z/find-tag loc z/next :list)]
-                          (let [first-sym (when (z/down form-loc)
-                                            (z/sexpr (z/down form-loc)))]
-                            (cond
-                              ;; e/defn form
-                              (= 'e/defn first-sym)
-                              (let [name-loc (z/right (z/down form-loc))
-                                    electric-name (z/sexpr name-loc)
-                                    form (z/sexpr form-loc)
-                                    deps (find-dependencies form)]
-                                (recur (z/right form-loc) 
-                                       (assoc result electric-name 
-                                              {:form form
-                                               :name electric-name
-                                               :type :e/defn
-                                               :deps deps})))
+        all-forms-map (atom {})
 
-                              ;; Regular defn or def
-                              (or (= 'defn first-sym) (= 'def first-sym))
-                              (let [form (z/sexpr form-loc)
-                                    name-sym (second form)
-                                    deps (find-dependencies form)]
-                                (recur (z/right form-loc)
-                                       (assoc result name-sym 
-                                              {:form form
-                                               :name name-sym
-                                               :type (if (= 'defn first-sym) :defn :def)
-                                               :deps deps})))
+        ;; Process each form
+        _ (doseq [form forms]
+            (when (and (seq? form) (symbol? (first form)))
+              (let [form-type (first form)]
+                (when (contains? #{'e/defn 'defn 'def} form-type)
+                  (let [name-sym (second form)]
+                    (when (symbol? name-sym)
+                      (swap! all-forms-map assoc name-sym
+                             {:form form
+                              :name name-sym
+                              :type (keyword form-type)
+                              :deps (find-dependencies form)})))))))
 
-                              :else
-                              (recur (z/next form-loc) result)))
-                          result))
         ;; Now collect only the starting function and its dependencies
         collected (atom #{})
         to-collect (atom [starting-sym])]
-    
+
     ;; Collect transitively
     (while (seq @to-collect)
       (let [current (first @to-collect)]
         (swap! to-collect rest)
         (when-not (@collected current)
           (swap! collected conj current)
-          (when-let [form-data (all-forms-map current)]
+          (when-let [form-data (@all-forms-map current)]
             (swap! to-collect into (:deps form-data))))))
-    
+
     ;; Get the forms we need and apply topological sort
-    (let [needed-forms (filter #(@collected (:name %)) (vals all-forms-map))]
-      (topological-sort needed-forms))))
+    (let [needed-forms (filter #(@collected (:name %)) (vals @all-forms-map))
+          sorted (topological-sort needed-forms)]
+      sorted)))
+
+
+
 
 (defn translate
   "Translate Electric code to Re-frame components.
-   
+
    Accepts either:
    - A vector of forms from read-file-forms (already sorted topologically)
    - An e/defn form: (e/defn Name [...] ...)
    - A single DOM form: (dom/div ...)
    - Multiple DOM forms: ((dom/h1 ...) (dom/p ...))
-   
+
    When first arg is a vector:
    - Second arg is the starting function name (ignored since vector is pre-filtered)
    - Third arg is optional output-ns for file writing
-   
+
    When first arg is a form:
    - Second arg is optional output-ns for file writing
 
@@ -541,7 +555,7 @@
          canonical-result (if is-forms-vector?
                             ;; FORMS VECTOR CASE - from read-file-forms
                             (let [;; Translate each form based on its type
-                                  translated-views 
+                                  translated-views
                                   (mapv (fn [{:keys [form name type]}]
                                           (case type
                                             :e/defn
@@ -560,7 +574,7 @@
                                                                        (recur (z/right node) (conj bodies node))
                                                                        bodies))))]
                                               (create-view-function name (or params []) (or body-zlocs [])))
-                                            
+
                                             ;; Regular defn or def - include as-is
                                             (:defn :def)
                                             {:view form
@@ -599,7 +613,7 @@
 
                                              {:views [(assoc view-data :topo-sort 1)]
                                               :events []
-                                              :subs []}) 
+                                              :subs []})
                                            ;; Not an e/defn - assume it's DOM form(s)
                                            (let [view-data (translate-dom-forms electric-code)]
                                              {:views [(assoc view-data :topo-sort 1)]
@@ -622,12 +636,25 @@
 ; Removed unused translate-file function
 
 (comment
-  ;; Returns canonical AST structure
-  (translate "electric-src/electric_starter_app/main.cljc" "Main" "reframe-output")
-  
+  ;; Example usage:
+
+  ;; First read forms from a file
+  (def forms (read-file-forms "electric-src/electric_starter_app/main.cljc" "Main"))
+
+  ;; Translate with file output (writes to reframe-output/reframe_output/*.cljs)
+  (translate forms "Main" "reframe-output")
+
   ;; Just translate without writing
-  (translate "electric-src/electric_starter_app/main.cljc" "Main")
-  
-  ;; Get simple forms
-  (extract-simple-forms (:views (translate "electric-src/electric_starter_app/main.cljc" "Main")))
+  (translate forms "Main")
+
+  ;; Translate a single e/defn form
+  (translate '(e/defn Test []
+                (dom/div (dom/text "Hello"))))
+
+  ;; Translate DOM forms directly
+  (translate '((dom/h1 (dom/text "Title"))
+               (dom/p (dom/text "Content"))))
+
+  ;; Get simple forms from translation result
+  (extract-simple-forms (:views (translate forms "Main")))
   )

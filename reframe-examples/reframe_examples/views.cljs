@@ -15,20 +15,22 @@
 
 (defn label-and-amount
   [top left text-of-label amt]
-  [:span
-   {:style (generate-absolute-style top left)}
-   [:div
-    {:class (->class :gen/row-indent)
-     :style {:display "grid"
-             :grid-template-columns (r-ui/line-columns customer-columns-xs)
-             :padding "5px"}}
-    [:div
-     {:class (->class :wc/customer-desc)}
-     text-of-label]
-    [:div
-     {:class [(->class :wc/product-total-extension) (->class :gen/no-select)]}
-     amt]]
-   ])
+  (let [span-style (generate-absolute-style top left)
+        div-class (->class :gen/row-indent)]
+    [:span
+     {:style span-style}
+     [:div
+      {:class div-class
+       :style {:display "grid"
+               :grid-template-columns (r-ui/line-columns customer-columns-xs)
+               :padding "5px"}}
+      [:div
+       {:class (->class :wc/customer-desc)}
+       text-of-label]
+      [:div
+       {:class [(->class :wc/product-total-extension) (->class :gen/no-select)]}
+       amt]]
+     ]))
 
 (defn main-view []
   [:div
