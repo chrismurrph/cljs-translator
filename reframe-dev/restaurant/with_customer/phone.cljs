@@ -3,9 +3,8 @@
    [re-frame.core :refer [clear-subscription-cache! dispatch-sync]]
    [reagent.core :as r]
    [reagent.dom.client :as rdc]
-   #_[restaurant.domain :as r-domain]
-   #_[restaurant.with-customer.events :as wc-events]
-   #_[restaurant.with-customer.views :as wc-views]
+   ;; Switch between these whether testing before or after a round
+   #_[reframe-output.views :as views]
    [reframe-examples.views :as views]))
 
 (defonce root-container

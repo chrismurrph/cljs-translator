@@ -311,8 +311,8 @@
       ;; Verify each view matches expected output
       (is (= expected-views views)))))
 
- (deftest test-current-translation-with-output
-  (testing "Current translation handles let bindings in e/defn - writes to output files"
+ (deftest test-translation-with-output-4
+  (testing "Translation handles let bindings in e/defn forms"
     (let [;; Define the forms directly (what would come from reading the file)
           forms [{:form '(def customer-columns-xs [100 70 70]),
                   :name 'customer-columns-xs,
@@ -366,8 +366,8 @@
                   :type :e/defn,
                   :deps '#{LabelAndAmountNew}}]
           
-          ;; Call translate with output-ns to write files
-          result (t/translate forms "Main" "reframe-output")
+          ;; Call translate WITHOUT output-ns - no file writing
+          result (t/translate forms "Main")
           views (t/extract-simple-forms (:views result))
 
           ;; Find the label-and-amount-new-view function
@@ -399,5 +399,121 @@
             (is (= :span (first (first let-body)))))))
 
       ;; Verify all views are generated (including Main)
-      (is (= 5 (count views))))))
+      (is (= 5 (count views)))))) 
+
+ (deftest test-current-translation-with-output
+  (testing "Current translation handles let bindings in e/client blocks with if expressions and event handlers - writes to output files"
+    (let [;; Define the forms directly based on the new Electric code with event handler
+          forms [{:form '(defn ->class [_] ""),
+                  :name '->class,
+                  :type :defn,
+                  :deps #{}}
+                 {:form (list 'e/defn 'Main '[ring-req]
+                          (list 'e/client
+                            (list 'binding ['dom/node 'js/document.body
+                                            'e/http-request (list 'e/server 'ring-req)]
+                              (list 'let ['error false
+                                          'paths nil
+                                          'total-size 100
+                                          'foregound "#3366CC"
+                                          'background "#EEEEEE"]
+                                (list 'dom/div
+                                  (list 'dom/props {:class '(->class :qr/body-7)})
+                                  (list 'if 'error
+                                    (list 'dom/div
+                                      (list 'dom/text 'error))
+                                    (list 'dom/div
+                                      (list 'dom/props {:class '(->class :qr/login-box-7)})
+                                      (list 'dom/div
+                                        '(dom/text "There's supposed to be an SVG here"))))
+                                  (list 'dom/button
+                                    (list 'dom/props {:class '(->class :qr/button-7)})
+                                    (list 'dom/On "click" 
+                                          (list 'fn [] (list 'wc-state/wc-mutation 'r-muts/take-out [:qr-code]))
+                                          nil)
+                                    '(dom/text "Done"))))))),
+                  :name 'Main,
+                  :type :e/defn,
+                  :deps '#{->class}}]
+          
+          ;; Call translate with output-ns to write files
+          result (t/translate forms "Main" "reframe-output")
+          views (t/extract-simple-forms (:views result))
+
+          ;; Find the main-view function
+          main-fn (first (filter #(and (seq? %)
+                                       (= 'defn (first %))
+                                       (= 'main-view (second %)))
+                                 views))]
+
+      ;; Verify the function exists
+      (is (some? main-fn))
+
+      ;; Check the structure of main-view
+      (when main-fn
+        (let [[_ _ params & body] main-fn
+              first-form (first body)]
+          ;; The body should start with a let form
+          (is (= 'let (first first-form)))
+
+          ;; Check the let bindings
+          (let [bindings (second first-form)]
+            (is (vector? bindings))
+            (is (= 'error (first bindings)))
+            (is (= false (second bindings)))
+            (is (= 'paths (nth bindings 2)))
+            (is (= nil (nth bindings 3)))
+            (is (= 'total-size (nth bindings 4)))
+            (is (= 100 (nth bindings 5))))
+
+          ;; The let body should contain the hiccup vector
+          (let [let-body (drop 2 first-form)
+                main-div (first let-body)]
+            (is (= 1 (count let-body)))
+            (is (vector? main-div))
+            (is (= :div (first main-div)))
+            
+            ;; Check for the if expression
+            (let [if-expr (nth main-div 2)]
+              (is (seq? if-expr))
+              (is (= 'if (first if-expr))))
+            
+            ;; Check for the button with event handler
+            (let [button (nth main-div 3)]
+              (is (vector? button))
+              (is (= :button (first button)))
+              ;; Check button props include both class and on-click
+              (let [button-props (second button)]
+                (is (map? button-props))
+                (is (contains? button-props :class))
+                (is (contains? button-props :on-click))
+                ;; Check the on-click handler
+                (let [on-click-handler (:on-click button-props)]
+                  (is (seq? on-click-handler))
+                  (is (= 'fn (first on-click-handler)))))))))
+
+      ;; Verify all views are generated
+      (is (= 2 (count views)))
+      
+      ;; Verify the output matches expected structure
+      (let [expected-main '(defn main-view [ring-req]
+                             (let [error false
+                                   paths nil
+                                   total-size 100
+                                   foregound "#3366CC"
+                                   background "#EEEEEE"]
+                               [:div
+                                {:class (->class :qr/body-7)}
+                                (if error
+                                  [:div
+                                   error]
+                                  [:div
+                                   {:class (->class :qr/login-box-7)}
+                                   [:div
+                                    "There's supposed to be an SVG here"]])
+                                [:button
+                                 {:on-click (fn [] (dispatch [:restaurant.events/take-out [:qr-code]]))
+                                  :class (->class :qr/button-7)} 
+                                 "Done"]]))]
+        (is (= expected-main main-fn))))))
 

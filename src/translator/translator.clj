@@ -6,7 +6,7 @@
             [clojure.walk :as walk]
             [cljfmt.core :as fmt]))
 
-(defn- electric-name->view-name
+(defn electric-name->view-name
   "Convert Electric function name to Re-frame view name.
    e.g. TodoItem -> todo-item-view"
   [electric-name]
@@ -16,7 +16,7 @@
       (str "-view")
       symbol))
 
-(defn- electric-name->kebab-case
+(defn electric-name->kebab-case
   "Convert Electric function name to kebab case.
    e.g. TodoItem -> todo-item"
   [electric-name]
@@ -25,7 +25,7 @@
       str/lower-case
       symbol))
 
-(defn- dom-element?
+(defn dom-element?
   "Check if a zipper location is a DOM element call"
   [zloc]
   (and (z/list? zloc)
@@ -34,23 +34,23 @@
            (and (symbol? sym)
                 (str/starts-with? (str sym) "dom/"))))))
 
-(defn- extract-tag-name
+(defn extract-tag-name
   "Extract HTML tag name from dom/element symbol"
   [dom-symbol]
-  (keyword (subs (str dom-symbol) 4)))
+  (keyword (subs (str dom-symbol) 4))) 
 
 (declare translate-dom-element)
 
-(defn- component-call?
+(defn component-call?
   "Check if a form is a component call (starts with uppercase)"
   [zloc]
   (and (z/list? zloc)
        (when-let [first-child (z/down zloc)]
          (let [sym (z/sexpr first-child)]
            (and (symbol? sym)
-                (Character/isUpperCase (first (name sym))))))))
+                (Character/isUpperCase (first (name sym)))))))) 
 
-(defn- translate-component-call
+(defn translate-component-call
   "Translate a component call from (ComponentName args) to [component-name-view args]"
   [zloc]
   (when (component-call? zloc)
@@ -67,7 +67,7 @@
       ;; Return as a vector with component name and args
       (into [view-name] args))))
 
-(defn- translate-dom-text
+(defn translate-dom-text
   "Extract text from (dom/text \"...\") node"
   [zloc]
   (when (z/list? zloc)
@@ -76,7 +76,7 @@
         (when-let [text-node (z/right first-child)]
           (z/sexpr text-node))))))
 
-(defn- translate-dom-props
+(defn translate-dom-props
   "Extract props from (dom/props {...}) node"
   [zloc]
   (when (z/list? zloc)
@@ -85,7 +85,66 @@
         (when-let [props-node (z/right first-child)]
           (z/sexpr props-node))))))
 
-(defn- translate-dom-element
+(def alias-to-namespace
+  "Configuration map for converting namespace aliases to full namespaces.
+   Used when translating Electric mutation namespaces to Re-frame event namespaces."
+  {'r-events 'restaurant.events
+   ;; Add more mappings as needed
+   })
+   ;; Add more mappings as needed
+   
+
+(defn translate-dom-event
+  "Extract event handler from (dom/On \"event\" handler) node and return props map"
+  [zloc]
+  (when (z/list? zloc)
+    (when-let [first-child (z/down zloc)]
+      (when (= 'dom/On (z/sexpr first-child))
+        (when-let [event-name-node (z/right first-child)]
+          (when-let [handler-node (z/right event-name-node)]
+            (let [event-name (z/sexpr event-name-node)
+                  handler (z/sexpr handler-node)
+                  ;; Convert Electric event name to Re-frame format
+                  ;; "click" -> :on-click
+                  rf-event-key (keyword (str "on-" event-name))]
+              ;; Check if handler is a function literal with a mutation call
+              (if (and (seq? handler)
+                       (or (= 'fn (first handler))
+                           (= 'fn* (first handler))))
+                ;; It's a function literal #(...)
+                (let [fn-body (nth handler 2)]  ;; Get the body of the fn
+                  (if (and (seq? fn-body)
+                           ;; Look for mutation pattern - any call with "mutation" in it
+                           (some #(and (symbol? %) 
+                                      (str/includes? (str %) "mutation")) 
+                                 (flatten fn-body)))
+                    ;; Extract the actual mutation being called
+                    ;; Pattern: (mutation-fn actual-mutation args...)
+                    (let [;; The actual mutation is the second arg to the mutation function
+                          actual-mutation (second fn-body)
+                          mutation-args (drop 2 fn-body)]
+                      (when (and (symbol? actual-mutation)
+                                 (namespace actual-mutation))
+                        (let [;; Transform namespace: r-muts → r-events
+                              ns-parts (str/split (namespace actual-mutation) #"-")
+                              new-ns (str/join "-" 
+                                              (map #(if (= % "muts") "events" %) 
+                                                   ns-parts))
+                              new-ns-sym (symbol new-ns)
+                              event-name (name actual-mutation)]
+                          ;; Check if we have a mapping for this namespace alias
+                          (if-let [full-ns (get alias-to-namespace new-ns-sym)]
+                            {rf-event-key (list 'fn [] (list 're-frame.core/dispatch (into [(keyword (name full-ns) event-name)] mutation-args)))} 
+                            (throw (ex-info (str "Unknown namespace alias: " new-ns-sym 
+                                                 ". Please add a mapping to alias-to-namespace configuration.")
+                                            {:alias new-ns-sym
+                                             :available-aliases (keys alias-to-namespace)}))))))
+                    ;; Not a mutation pattern - return generic handler
+                    {rf-event-key handler}))
+                ;; Not a function literal
+                {rf-event-key handler}))))))))
+
+(defn translate-dom-element
   "Translate a single Electric DOM element to Hiccup"
   [zloc]
   (cond
@@ -105,29 +164,46 @@
     (dom-element? zloc)
     (let [tag-symbol (z/sexpr (z/down zloc))
           tag-name (extract-tag-name tag-symbol)
-          children (loop [child (z/right (z/down zloc))
-                          result []]
-                     (if child
-                       (recur (z/right child)
-                              (conj result (translate-dom-element child)))
-                       result))
-          ;; Filter out nils
-          children (remove nil? children)]
+          ;; Process children and collect props and events separately
+          {:keys [props events children]} 
+          (loop [child (z/right (z/down zloc))
+                 result {:props nil :events {} :children []}]
+            (if child
+              (let [;; Check if it's dom/props
+                    dom-props (translate-dom-props child)
+                    ;; Check if it's dom/On
+                    dom-event (translate-dom-event child)
+                    ;; Otherwise it's a regular child
+                    translated-child (when (and (not dom-props) (not dom-event))
+                                       (translate-dom-element child))]
+                (recur (z/right child)
+                       (cond-> result
+                         dom-props (assoc :props dom-props)
+                         dom-event (update :events merge dom-event)
+                         translated-child (update :children conj translated-child))))
+              result))
+          ;; Filter out nils from children
+          children (remove nil? children)
+          ;; Merge props and events
+          all-props (merge props events)]
 
       (cond
-        ;; No children
-        (empty? children)
+        ;; No children and no props
+        (and (empty? children) (empty? all-props))
         [tag-name]
 
-        ;; First child is a map (props)
-        (map? (first children))
-        (into [tag-name (first children)] (rest children))
+        ;; Has props but no children
+        (and (empty? children) (seq all-props))
+        [tag-name all-props]
 
-        ;; Regular children
+        ;; Has children but no props
+        (and (seq children) (empty? all-props))
+        (into [tag-name] children)
+
+        ;; Has both props and children
         :else
-        (into [tag-name] children)))
+        (into [tag-name all-props] children)))
 
-    ;; For other nodes, try to get sexpr
     ;; Handle let forms - translate the body
     (and (z/list? zloc)
          (= 'let (z/sexpr (z/down zloc))))
@@ -149,6 +225,20 @@
         `(~'let ~(z/sexpr bindings-zloc) ~@translated-body)
         `(~'let ~(z/sexpr bindings-zloc) ~@translated-body)))
 
+    ;; Handle if forms - translate the branches
+    (and (z/list? zloc)
+         (= 'if (z/sexpr (z/down zloc))))
+    (let [if-sym-zloc (z/down zloc)
+          condition-zloc (z/right if-sym-zloc)
+          then-zloc (z/right condition-zloc)
+          else-zloc (z/right then-zloc)
+          ;; Translate branches
+          translated-then (translate-dom-element then-zloc)
+          translated-else (when else-zloc (translate-dom-element else-zloc))]
+      (if translated-else
+        `(~'if ~(z/sexpr condition-zloc) ~translated-then ~translated-else)
+        `(~'if ~(z/sexpr condition-zloc) ~translated-then)))
+
     ;; For other nodes, try to get sexpr
     (z/sexpr-able? zloc)
     (z/sexpr zloc)
@@ -156,10 +246,10 @@
     :else
     nil))
 
-(defn- find-client-binding-body
+(defn find-client-binding-body
   "Find body expressions inside (e/client (binding [...] body...)) or (e/client body...)"
-  [edefn-zloc]
-  (when-let [client-zloc (z/find-value edefn-zloc z/next 'e/client)]
+  [edefnzloc]
+  (when-let [client-zloc (z/find-value edefnzloc z/next 'e/client)]
     (when-let [client-form (z/up client-zloc)]
       ;; Check if next element is a binding form
       (let [first-in-client (z/down (z/right client-zloc))]
@@ -181,14 +271,14 @@
               (recur (z/right node) (conj bodies node))
               bodies)))))))
 
-(defn- extract-function-params
+(defn extract-function-params
   "Extract parameter vector from an e/defn zipper location"
-  [defn-zloc]
-  (when-let [name-zloc (z/right defn-zloc)]
+  [defnzloc]
+  (when-let [name-zloc (z/right defnzloc)]
     (when-let [params-zloc (z/right name-zloc)]
       (z/sexpr params-zloc))))
 
-(defn- find-dependencies
+(defn find-dependencies
   "Find all user-defined function dependencies in a form, excluding:
    - Local bindings and parameters
    - Electric framework functions (dom/*, e/*, svg/*)
@@ -198,7 +288,7 @@
   (let [bindings (atom #{})
         deps (atom #{})
         ;; Common Clojure special forms and core functions to exclude
-        core-forms #{'def 'defn 'defn- 'let 'let* 'fn 'fn* 'loop 'loop*
+        core-forms #{'def 'defn 'let 'let* 'fn 'fn* 'loop 'loop*
                      'binding 'if 'when 'cond 'or 'and 'not '=
                      'str '+ '- '* '/ 'into 'conj 'assoc 'dissoc
                      'vec 'list 'map 'filter 'reduce 'apply 'partial
@@ -276,7 +366,7 @@
                       (second form))]
       (disj @deps form-name))))
 
-(defn- create-view-function
+(defn create-view-function
   "Create a Re-frame view function from Electric function components"
   [electric-name params body-zlocs]
   (let [view-name (electric-name->view-name electric-name)
@@ -300,7 +390,7 @@
      :name view-name
      :deps deps}))
 
-(defn- topological-sort
+(defn topological-sort
   "Sort a collection of {:name ... :deps ...} maps topologically.
    Items with no dependencies come first."
   [items]
@@ -339,7 +429,7 @@
 
     @result))
 
-(defn- translate-dom-forms
+(defn translate-dom-forms
   "Translate a sequence of DOM forms (or a single form) to Hiccup.
    Returns a canonical AST structure."
   [dom-forms]
@@ -364,7 +454,7 @@
      :name 'anonymous
      :deps (find-dependencies view)}))
 
-(defn- canonicalize-views
+(defn canonicalize-views
   "Ensure all views are in canonical AST format with :view, :name, :deps keys"
   [views]
   (mapv (fn [v]
@@ -384,7 +474,7 @@
   (mapv :view canonical-views))
 
 (defn write-forms-to-file!
-  "Write a collection of AST forms to a file with proper formatting using cljfmt.
+  "Write a collection of AST forms to a file with proper formatting using zprint.
    Forms should have :view, :name, and optionally :topo-sort keys."
   [ns-name ast-forms]
   (let [;; Convert hyphenated namespace to underscored subdirectory
@@ -397,20 +487,52 @@
         requires (atom #{})
         _ (walk/prewalk
            (fn [form]
-             (when (and (symbol? form)
-                        (namespace form))
-               (swap! requires conj (symbol (namespace form))))
-             form)
-           (map :view ast-forms))
+             (cond
+               ;; Check for namespaced symbols
+               (and (symbol? form)
+                    (namespace form))
+               (do (swap! requires conj (symbol (namespace form)))
+                   form)
+               
+               ;; Check for namespaced keywords (like :restaurant.events/take-out)
+               (and (keyword? form)
+                    (namespace form)
+                    ;; Only add if it looks like a real namespace (contains a dot)
+                    ;; This filters out CSS-style keywords like :qr/body-7
+                    (str/includes? (namespace form) "."))
+               (do (swap! requires conj (symbol (namespace form)))
+                   form)
+               
+               ;; Check for dispatch calls
+               (and (symbol? form)
+                    (= 'dispatch form))
+               (do (swap! requires conj 're-frame.core)
+                   form)
+               
+               :else form))
+           (map :view ast-forms)) 
 
+        ;; Build the namespace form
+        ;; Build the namespace form
         ;; Build the namespace form
         ns-form (if (empty? @requires)
                   `(~'ns ~(symbol (str base-dir "." sub-ns)))
                   `(~'ns ~(symbol (str base-dir "." sub-ns))
                     (:require
                      ~@(sort (map (fn [req]
-                                    [(symbol req) :as (symbol req)])
-                                  @requires)))))
+                                    (cond
+                                      (= req 're-frame.core)
+                                      '[re-frame.core :refer [dispatch]]
+                                      
+                                      ;; For event namespaces, just require without :as
+                                      (and (symbol? req)
+                                           (str/ends-with? (str req) ".events"))
+                                      [(symbol req)]
+                                      
+                                      ;; Default case - use :as
+                                      :else
+                                      [(symbol req) :as (symbol req)]))
+                                  @requires))))) 
 
         ;; Sort forms if they have :topo-sort
         sorted-forms (if (every? #(contains? % :topo-sort) ast-forms)
@@ -420,18 +542,20 @@
         ;; Extract just the :view from each form
         view-forms (mapv :view sorted-forms)
 
-        ;; Build the complete file content with proper formatting
-        ;; Use pprint to get initial structure with newlines
-        ns-str (with-out-str (pp/pprint ns-form))
-        forms-str (str/join "\n\n"
-                           (map #(with-out-str (pp/pprint %)) view-forms))
-
-        ;; Combine namespace and forms
-        unformatted-str (str ns-str "\n" forms-str)
-
-        ;; Use cljfmt with default settings
-        ;; This gives us standard Clojure formatting
-        formatted-str (fmt/reformat-string unformatted-str)]
+        ;; Use zprint for better formatting if available, otherwise fallback to cljfmt
+        formatted-str (try
+                        (require '[zprint.core :as zp])
+                        (let [zprint-str (resolve 'zprint.core/zprint-file-str)
+                              all-forms (into [ns-form] view-forms)]
+                          (zprint-str (str/join "\n\n" (map pr-str all-forms))
+                                      "" 
+                                      {:parse-string? true
+                                       :style :community}))
+                        (catch Exception e
+                          ;; Fallback to cljfmt
+                          (let [all-forms (into [ns-form] view-forms)
+                                unformatted-str (str/join "\n\n" (map pr-str all-forms))]
+                            (fmt/reformat-string unformatted-str))))]
 
     ;; Ensure directory exists
     (let [file (clojure.java.io/file file-path)
@@ -465,7 +589,8 @@
         forms (try
                 (require '[edamame.core :as e])
                 ((resolve 'edamame.core/parse-string-all) content {:features #{:cljs}
-                                                                      :read-cond :allow}) 
+                                                                    :read-cond :allow
+                                                                    :fn true}) 
                 (catch Exception e
                   ;; Fallback to reading forms one by one
                   (println "edamame" {:e e})
@@ -565,8 +690,8 @@
                                                   form-zloc (z/of-string (pr-str form))
                                                   body-zlocs (or (find-client-binding-body form-zloc)
                                                                  ;; If no e/client, get body after params
-                                                                 (let [defn-zloc (z/find-value form-zloc z/next 'e/defn)
-                                                                       name-zloc (z/right defn-zloc)
+                                                                 (let [defnzloc (z/find-value form-zloc z/next 'e/defn)
+                                                                       name-zloc (z/right defnzloc)
                                                                        params-vec-zloc (z/right name-zloc)]
                                                                    (loop [node (z/right params-vec-zloc)
                                                                           bodies []]
@@ -590,18 +715,18 @@
                                   code-str (pr-str electric-code)
                                   zloc (z/of-string code-str)
                                   ;; Check if it's an e/defn form
-                                  result (if-let [defn-zloc (z/find-value zloc z/next 'e/defn)]
+                                  result (if-let [defnzloc (z/find-value zloc z/next 'e/defn)]
                                            ;; Handle e/defn form
                                            (let [;; Get the function name (move right from e/defn)
-                                                 name-zloc (z/right defn-zloc)
+                                                 name-zloc (z/right defnzloc)
                                                  electric-name (z/sexpr name-zloc)
                                                  ;; Get the parameters
-                                                 params (extract-function-params defn-zloc)
+                                                 params (extract-function-params defnzloc)
                                                  ;; Find body expressions - first try e/client, then direct body
-                                                 edefn-form (z/up defn-zloc)
-                                                 body-zlocs (or (find-client-binding-body edefn-form)
+                                                 edefnform (z/up defnzloc)
+                                                 body-zlocs (or (find-client-binding-body edefnform)
                                                                 ;; If no e/client, get body after params
-                                                                (let [params-zloc (z/find-value edefn-form z/next electric-name)
+                                                                (let [params-zloc (z/find-value edefnform z/next electric-name)
                                                                       params-vec-zloc (z/right params-zloc)]
                                                                   (loop [node (z/right params-vec-zloc)
                                                                          bodies []]
