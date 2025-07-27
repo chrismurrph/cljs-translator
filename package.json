@@ -1,7 +1,7 @@
 {
   "name": "ai-1",
   "version": "1.0.0",
-  "description": "A minimal Electric Clojure app, and instructions on how to integrate it into an existing app.",
+  "description": "A translating to Re-frame Clojure application.",
   "main": "index.js",
   "directories": {
     "test": "test"
