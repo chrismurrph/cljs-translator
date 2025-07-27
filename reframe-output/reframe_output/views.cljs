@@ -17,7 +17,5 @@
        [:div {:class (->class :qr/login-box-7)}
         [:div "There's supposed to be an SVG here"]])
      [:button
-      {:on-click (fn []
-                   (re-frame.core/dispatch [:restaurant.events/take-out
-                                            [:qr-code]])),
+      {:on-click (fn [] (dispatch [:restaurant.events/take-out [:qr-code]])),
        :class (->class :qr/button-7)} "Done"]]))

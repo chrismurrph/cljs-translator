@@ -32,14 +32,21 @@
        (when-let [first-child (z/down zloc)]
          (let [sym (z/sexpr first-child)]
            (and (symbol? sym)
-                (str/starts-with? (str sym) "dom/"))))))
+                (or (str/starts-with? (str sym) "dom/")
+                    ;; Check for unsupported namespaces  
+                    (when (str/starts-with? (str sym) "svg/")
+                      (throw (ex-info "SVG elements are not yet supported by the translator. Please use only dom/* elements."
+                                      {:unsupported-element sym
+                                       :element-type "svg"})))
+                    ;; Add other unsupported namespaces here as needed
+                    )))))) 
 
 (defn extract-tag-name
   "Extract HTML tag name from dom/element symbol"
   [dom-symbol]
   (keyword (subs (str dom-symbol) 4))) 
 
-(declare translate-dom-element)
+(declare translate-electric-form) 
 
 (defn component-call?
   "Check if a form is a component call (starts with uppercase)"
@@ -62,7 +69,7 @@
                       result []]
                  (if child
                    (recur (z/right child)
-                          (conj result (translate-dom-element child)))
+                          (conj result (translate-electric-form child)))
                    result))]
       ;; Return as a vector with component name and args
       (into [view-name] args))))
@@ -134,7 +141,7 @@
                               event-name (name actual-mutation)]
                           ;; Check if we have a mapping for this namespace alias
                           (if-let [full-ns (get alias-to-namespace new-ns-sym)]
-                            {rf-event-key (list 'fn [] (list 're-frame.core/dispatch (into [(keyword (name full-ns) event-name)] mutation-args)))} 
+                            {rf-event-key (list 'fn [] (list 'dispatch (into [(keyword (name full-ns) event-name)] mutation-args)))} 
                             (throw (ex-info (str "Unknown namespace alias: " new-ns-sym 
                                                  ". Please add a mapping to alias-to-namespace configuration.")
                                             {:alias new-ns-sym
@@ -144,8 +151,8 @@
                 ;; Not a function literal
                 {rf-event-key handler}))))))))
 
-(defn translate-dom-element
-  "Translate a single Electric DOM element to Hiccup"
+(defn translate-electric-form
+  "Translate a single Electric form to Hiccup"
   [zloc]
   (cond
     ;; Handle (dom/text "...")
@@ -175,7 +182,7 @@
                     dom-event (translate-dom-event child)
                     ;; Otherwise it's a regular child
                     translated-child (when (and (not dom-props) (not dom-event))
-                                       (translate-dom-element child))]
+                                       (translate-electric-form child))]
                 (recur (z/right child)
                        (cond-> result
                          dom-props (assoc :props dom-props)
@@ -216,7 +223,7 @@
                                 result []]
                            (if current
                              (recur (z/right current)
-                                    (conj result (translate-dom-element current)))
+                                    (conj result (translate-electric-form current)))
                              result))
           ;; Filter out nils
           translated-body (remove nil? translated-body)]
@@ -233,11 +240,36 @@
           then-zloc (z/right condition-zloc)
           else-zloc (z/right then-zloc)
           ;; Translate branches
-          translated-then (translate-dom-element then-zloc)
-          translated-else (when else-zloc (translate-dom-element else-zloc))]
+          translated-then (translate-electric-form then-zloc)
+          translated-else (when else-zloc (translate-electric-form else-zloc))]
       (if translated-else
         `(~'if ~(z/sexpr condition-zloc) ~translated-then ~translated-else)
         `(~'if ~(z/sexpr condition-zloc) ~translated-then)))
+
+    ;; Check for unsupported special forms that contain DOM elements
+    (and (z/list? zloc)
+         (when-let [first-child (z/down zloc)]
+           (let [form-type (z/sexpr first-child)]
+             (contains? #{'when 'when-not 'when-let 'when-some
+                          'cond 'case 'condp
+                          'for 'doseq 'while
+                          'loop 'recur
+                          'try 'catch 'finally 'throw
+                          '->> '-> 'as-> 'some-> 'some->>
+                          'and 'or} form-type))))
+    (let [form-type (z/sexpr (z/down zloc))
+          ;; Check if it contains any dom/ calls
+          form-str (z/string zloc)
+          contains-dom? (str/includes? form-str "dom/")]
+      (if contains-dom?
+        (throw (ex-info (str "Unsupported form '" form-type "' containing DOM elements. "
+                             "The translator currently only supports 'let' and 'if' for control flow. "
+                             "Please refactor to use supported forms.")
+                        {:unsupported-form form-type
+                         :form (z/sexpr zloc)
+                         :supported-forms #{'let 'if}}))
+        ;; If it doesn't contain DOM elements, pass it through as-is
+        (z/sexpr zloc)))
 
     ;; For other nodes, try to get sexpr
     (z/sexpr-able? zloc)
@@ -371,7 +403,7 @@
   [electric-name params body-zlocs]
   (let [view-name (electric-name->view-name electric-name)
         ;; Translate each body expression
-        body-elements (mapv translate-dom-element body-zlocs)
+        body-elements (mapv translate-electric-form body-zlocs) 
         ;; Filter out nils
         body-elements (remove nil? body-elements)
         ;; Wrap multiple elements in React Fragment
@@ -444,7 +476,7 @@
         ;; Convert each form to a zipper and translate
         translated (mapv (fn [form]
                           (let [zloc (z/of-string (pr-str form))]
-                            (translate-dom-element zloc)))
+                            (translate-electric-form zloc)))
                         forms)
         ;; Return single element or wrap multiple in fragment
         view (if (= 1 (count translated))
