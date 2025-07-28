@@ -53,5 +53,4 @@
     (= (->> s
          (take 16)
          (apply str))
-      (word s)))
-  )
+      (word s))))
