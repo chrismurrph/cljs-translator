@@ -5,17 +5,12 @@
    [com.pangglow.util :as utl]
    [hyperfiddle.electric-dom3 :as dom]
    [hyperfiddle.electric3 :as e]
-   [restaurant.mutations :as r-muts]
    [restaurant.ui :as r-ui]
    [restaurant.with-customer.ui :as wc-ui]
    [restaurant.with-customer.state :as wc-state]))
 
 (defn ->class [_]
   "")
-
-;; There will be a special rule for these ones to turn it into a simple button
-(e/defn contrib-ui-Button [event-f css-kw bill-denomination]
-  )
 
 (e/defn OverlayAsPaths [z-index n dims]
   (when (> n 1)
@@ -29,13 +24,6 @@
             (dom/props {:opacity opacity
                         :d rect-path})))))))
 
-(e/defn MainAsButton [event-f css-kw bill-denomination disabled?]
-  (contrib-ui-Button event-f
-    {:disabled disabled?
-     :style {:position "absolute"}
-     :class (->class css-kw)}
-    (str (first bill-denomination))))
-
 (defn no-pieces-left [calc-state num-till-pieces]
   (and (= :giving-change calc-state) (not (pos? num-till-pieces))))
 
@@ -45,10 +33,11 @@
   (and (= :giving-change calc-state) (neg? (- customer-change-amount denomination-value))))
 
 (defn denomination-event [str-kind denomination disabled? amount current-bill-id current-till calc-state selected? config]
+  (utl/nothing "denomination-event" {:amount amount})
   (when-not disabled?
     (let [negate? (and (= :giving-change calc-state) selected? (zero? amount))]
       (when (= :giving-change calc-state)
-        (utl/nothing false (str "negate? in " str-kind) {:negate? negate? :selected? selected? :amount amount}))
+        (utl/nothing true (str "negate? in " str-kind) {:negate? negate? :selected? selected? :amount amount}))
       (wc-state/wc-mutation wc-muts-till/receive-note current-bill-id current-till calc-state denomination amount config negate?))))
 
 ;;
@@ -94,34 +83,83 @@
                                                      :count bill-denomination-count})
             (dom/div
               (dom/props {:style {:position "relative"}})
-              (MainAsButton event-f css-kw bill-denomination disabled?)
+              (dom/button
+                (dom/props {:disabled disabled?
+                            :style {:position "absolute"}
+                            :class (->class css-kw)})
+                (dom/On "click" event-f nil)
+                (dom/text (str face-value)))
               (OverlayAsPaths 10 bill-denomination-count dims))))))))
+
+(def config {:cut-deletes
+             {:b? true,
+              :desc
+              "If user Cuts an item, even a heading, then after a timeout with no paste, that item/heading will be auto-deleted"},
+             :items-disappear
+             {:b? false, :desc "Item selection disappears when billing-out?"},
+             :scroll-always
+             {:b? false,
+              :desc
+              "When true then the scroll control will always be visible. When false only when needed."},
+             :auto-give-change
+             {:b? false,
+              :desc
+              "When have received at least bill amount then automatically go :billing-out -> :giving-change"},
+             :git {:sha "3db0fe3", :branch "pos4"},
+             :back-position
+             {:key :bottom,
+              :keys #{:bottom :top :lower-bottom},
+              :desc
+              "This is for Back and Home pill looking buttons when choosing dishes/products, where they are placed"},
+             :prod
+             {:b? false,
+              :desc
+              "Running on a server on the cloud, used by end users not developers"},
+             :app-name
+             {:key :pos,
+              :keys #{:pos :chat :prods},
+              :desc
+              "We have many applications that run in docker files. This says which will be run and built as an uberjar."},
+             :restaurant {:b? true},
+             :record
+             {:b? false,
+              :desc
+              "Record all the wc mutations, that pressing a Developer button can save them to a file on the server"}})
 
 (e/defn Main [ring-req]
   (e/client
     (binding [dom/node #?(:cljs js/document.body :clj nil)
               e/http-request (e/server ring-req)]
-      (let [error false
-            paths nil
-            total-size 100
-            foregound "#3366CC" #_"black"
-            background "#EEEEEE" #_"transparent"]
-        (dom/div
-          (dom/props {:class (->class :qr/body-7)})
-          (if error
-            (dom/div
-              (dom/text error))
-            (dom/div
-              (dom/props {:class (->class :qr/login-box-7)})
-              (dom/div
-                (dom/text "There's supposed to be an SVG here"))
-              #_(svg/svg
-                (dom/props {:width (str total-size) :height (str total-size) :viewBox (str "0 0 " total-size " " total-size)})
-                (svg/rect
-                  (dom/props {:width total-size :height total-size :fill background}))
-                (svg/path
-                  (dom/props {:d paths :fill foregound})))))
-          (dom/button
-            (dom/props {:class (->class :qr/button-7)})
-            (dom/On "click" #(wc-state/wc-mutation r-muts/take-out [:qr-code]) nil)
-            (dom/text "Done")))))))
+      (let [top 70 left 0 current-bill-id "Z2DNP5ZLZ9HTUAH0"
+            current-till {:till/id "G36MR7DXKQ7QDR0C",
+                          :till/till
+                          {[20 true] 10,
+                           [5 false] 10,
+                           [1000 true] 10,
+                           [10 false] 10,
+                           [500 true] 10,
+                           [200 true] 10,
+                           [20 false] 10,
+                           [100 true] 10,
+                           [50 true] 10,
+                           [1 false] 10}}
+            calc-state :billing-out
+            bill-denominations {}
+            till-denominations {[20 true] 10,
+                                [5 false] 10,
+                                [1000 true] 10,
+                                [10 false] 10,
+                                [500 true] 10,
+                                [200 true] 10,
+                                [20 false] 10,
+                                [100 true] 10,
+                                [50 true] 10,
+                                [1 false] 10}
+            note-values [[100 true] [50 true] [20 true]]
+            customer-change-amount -235]
+        ;; Funny Electric thing that stuff from a let needs 'activated':
+        (utl/nothing true "bill-out-bank-notes" {:top top :left left :current-bill-id current-bill-id :current-till current-till
+                                                 :calc-state calc-state :bill-denominations bill-denominations :till-denominations till-denominations
+                                                 :note-values note-values :customer-change-amount customer-change-amount :config config})
+        (BillOutBankNotes top left current-bill-id current-till calc-state bill-denominations till-denominations
+          note-values customer-change-amount config)))))
