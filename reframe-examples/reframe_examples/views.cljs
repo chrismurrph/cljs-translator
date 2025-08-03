@@ -4,47 +4,11 @@
    [re-frame.core :refer [dispatch]]
    [restaurant.events :as r-events]
    [restaurant.ui :as r-ui]
-   [restaurant.with-customer.calc.events :as wc-calc-events]
    [restaurant.with-customer.till.events :as wc-till-events]
    [restaurant.with-customer.ui :as wc-ui]))
 
 (defn ->class [_]
   "")
-
-(def customer-columns-xs [100 70 70])
-
-(defn label-and-amount [top left text-of-label amt]
-  [:span
-   {:style (wc-ui/generate-absolute-style top left)}
-   [:div
-    {:class (->class :gen/row-indent)
-     :style {:display "grid"
-             :grid-template-columns (r-ui/line-columns customer-columns-xs)
-             :padding "5px"}}
-    [:div
-     {:class (->class :wc/customer-desc)}
-     text-of-label]
-    [:div
-     {:class [(->class :wc/product-total-extension) (->class :gen/no-select)]}
-     amt]]])
-
-(defn bill-out-x [top left received-from-customer current-bill-id calc-state]
-  [:span {:style (wc-ui/generate-absolute-style top left)}
-   [:div {:class (->class :gen/row-indent)
-          :style {:display "grid"
-                  :grid-template-columns (r-ui/line-columns [50])
-                  :padding "5px"}}
-    [:div
-     (let [disabled? (comment (zero? received-from-customer))]
-       [:button
-        {:on-click #(dispatch [::wc-calc-events/x-digit-1 current-bill-id calc-state])
-         :disabled disabled?
-         :class (->class :wc/digit-button)
-         :style {:color "red"}}
-        "<"])]]])
-
-;; When translating there will be a special rule for these ones to turn each into a simple button
-#_(e/defn contrib-ui-Button [event-f css-kw bill-denomination])
 
 (defn overlay-as-paths [z-index n dims]
   (when (> n 1)
@@ -87,9 +51,6 @@
 (defn bill-out-bank-notes
   [top left current-bill-id current-till calc-state bill-denominations till-denominations
    note-values customer-change-amount config]
-  (utl/nothing true "bill-out-bank-notes" {:top top :left left :current-bill-id current-bill-id :current-till current-till
-                                           :calc-state calc-state :bill-denominations bill-denominations :till-denominations till-denominations
-                                           :note-values note-values :customer-change-amount customer-change-amount :config config})
   [:span
    {:style (wc-ui/generate-absolute-style top left)}
    [:div
@@ -188,13 +149,8 @@
                             [1 false] 10}
         note-values [[100 true] [50 true] [20 true]]
         customer-change-amount -235]
-          ;; Funny Electric thing that stuff from a let needs 'activated':
     (utl/nothing true "bill-out-bank-notes" {:top top :left left :current-bill-id current-bill-id :current-till current-till
                                              :calc-state calc-state :bill-denominations bill-denominations :till-denominations till-denominations
                                              :note-values note-values :customer-change-amount customer-change-amount :config config})
     [bill-out-bank-notes top left current-bill-id current-till calc-state bill-denominations till-denominations
      note-values customer-change-amount config]))
-
-(comment
-  ;; Gives error, you can't really write reader syntax
-  (= ::r-events/take-out (keyword (str ":" "r-events/take-out"))))

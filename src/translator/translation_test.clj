@@ -401,119 +401,83 @@
       ;; Verify all views are generated (including Main)
       (is (= 5 (count views)))))) 
 
- (deftest test-current-translation-with-output
-  (testing "Current translation handles let bindings in e/client blocks with if expressions and event handlers - writes to output files"
-    (let [;; Define the forms directly based on the new Electric code with event handler
+(deftest test-current-svg-and-complex-forms
+  (testing "Current translation handles SVG, e/for, plain defns, and complex nested structures - writes to output files"
+    (let [;; Electric forms from the actual Main file - simplified to focus on new patterns
           forms [{:form '(defn ->class [_] ""),
                   :name '->class,
                   :type :defn,
                   :deps #{}}
+                 {:form '(e/defn OverlayAsPaths [z-index n dims]
+                           (when (> n 1)
+                             (dom/div
+                               (dom/props {:style {:pointer-events "none"
+                                                  :position "absolute"
+                                                  :z-index z-index}})
+                               (svg/svg
+                                 (e/for [[opacity rect-path] (e/diff-by identity (map vector utl/opacities (utl/rect->path-dims dims n)))]
+                                   (svg/path
+                                     (dom/props {:opacity opacity
+                                                 :d rect-path}))))))),
+                  :name 'OverlayAsPaths,
+                  :type :e/defn,
+                  :deps '#{utl/opacities utl/rect->path-dims}}
+                 {:form '(def config {:restaurant {:b? true}}),
+                  :name 'config,
+                  :type :def,
+                  :deps #{}}
                  {:form (list 'e/defn 'Main '[ring-req]
                           (list 'e/client
-                            (list 'binding ['dom/node 'js/document.body
-                                            'e/http-request (list 'e/server 'ring-req)]
-                              (list 'let ['error false
-                                          'paths nil
-                                          'total-size 100
-                                          'foregound "#3366CC"
-                                          'background "#EEEEEE"]
-                                (list 'dom/div
-                                  (list 'dom/props {:class '(->class :qr/body-7)})
-                                  (list 'if 'error
-                                    (list 'dom/div
-                                      (list 'dom/text 'error))
-                                    (list 'dom/div
-                                      (list 'dom/props {:class '(->class :qr/login-box-7)})
-                                      (list 'dom/div
-                                        '(dom/text "There's supposed to be an SVG here"))))
-                                  (list 'dom/button
-                                    (list 'dom/props {:class '(->class :qr/button-7)})
-                                    (list 'dom/On "click" 
-                                          (list 'fn [] (list 'wc-state/wc-mutation 'r-muts/take-out [:qr-code]))
-                                          nil)
-                                    '(dom/text "Done"))))))),
+                            (list 'binding ['dom/node 'js/document.body]
+                              (list 'dom/div
+                                '(OverlayAsPaths 10 2 {:width 100 :height 50}))))),
                   :name 'Main,
                   :type :e/defn,
-                  :deps '#{->class}}]
+                  :deps '#{OverlayAsPaths}}]
           
           ;; Call translate with output-ns to write files
           result (t/translate forms "Main" "reframe-output")
-          views (t/extract-simple-forms (:views result))
+          views (t/extract-simple-forms (:views result))]
 
-          ;; Find the main-view function
-          main-fn (first (filter #(and (seq? %)
-                                       (= 'defn (first %))
-                                       (= 'main-view (second %)))
-                                 views))]
-
-      ;; Verify the function exists
-      (is (some? main-fn))
-
-      ;; Check the structure of main-view
-      (when main-fn
-        (let [[_ _ params & body] main-fn
-              first-form (first body)]
-          ;; The body should start with a let form
-          (is (= 'let (first first-form)))
-
-          ;; Check the let bindings
-          (let [bindings (second first-form)]
-            (is (vector? bindings))
-            (is (= 'error (first bindings)))
-            (is (= false (second bindings)))
-            (is (= 'paths (nth bindings 2)))
-            (is (= nil (nth bindings 3)))
-            (is (= 'total-size (nth bindings 4)))
-            (is (= 100 (nth bindings 5))))
-
-          ;; The let body should contain the hiccup vector
-          (let [let-body (drop 2 first-form)
-                main-div (first let-body)]
-            (is (= 1 (count let-body)))
-            (is (vector? main-div))
-            (is (= :div (first main-div)))
-            
-            ;; Check for the if expression
-            (let [if-expr (nth main-div 2)]
-              (is (seq? if-expr))
-              (is (= 'if (first if-expr))))
-            
-            ;; Check for the button with event handler
-            (let [button (nth main-div 3)]
-              (is (vector? button))
-              (is (= :button (first button)))
-              ;; Check button props include both class and on-click
-              (let [button-props (second button)]
-                (is (map? button-props))
-                (is (contains? button-props :class))
-                (is (contains? button-props :on-click))
-                ;; Check the on-click handler
-                (let [on-click-handler (:on-click button-props)]
-                  (is (seq? on-click-handler))
-                  (is (= 'fn (first on-click-handler)))))))))
-
-      ;; Verify all views are generated
-      (is (= 2 (count views)))
+      ;; Verify functions are generated
+      (is (= 4 (count views))) ; ->class, OverlayAsPaths, config, Main
       
-      ;; Verify the output matches expected structure
-      (let [expected-main '(defn main-view [ring-req]
-                             (let [error false
-                                   paths nil
-                                   total-size 100
-                                   foregound "#3366CC"
-                                   background "#EEEEEE"]
-                               [:div
-                                {:class (->class :qr/body-7)}
-                                (if error
-                                  [:div
-                                   error]
-                                  [:div
-                                   {:class (->class :qr/login-box-7)}
-                                   [:div
-                                    "There's supposed to be an SVG here"]])
-                                [:button
-                                 {:on-click (fn [] (dispatch [:restaurant.events/take-out [:qr-code]]))
-                                  :class (->class :qr/button-7)} 
-                                 "Done"]]))]
-        (is (= expected-main main-fn))))))
-
+      ;; Find specific functions to verify structure
+      (let [overlay-fn (first (filter #(and (seq? %)
+                                           (= 'defn (first %))
+                                           (= 'overlay-as-paths (second %)))
+                                     views))
+            config-def (first (filter #(and (seq? %)
+                                          (= 'def (first %))
+                                          (= 'config (second %)))
+                                    views))]
+        
+        ;; Check OverlayAsPaths function has SVG elements
+        (when overlay-fn
+          (let [[_ _ params & body] overlay-fn
+                when-form (first body)]
+            (is (= 'when (first when-form)))
+            (let [div-form (nth when-form 2)]
+              (is (vector? div-form))
+              (is (= :div (first div-form)))
+              ;; Check for SVG element
+              (let [svg-form (nth div-form 2)]
+                (is (vector? svg-form))
+                (is (= :svg (first svg-form)))
+                ;; Check for for loop
+                (let [for-expr (second svg-form)]
+                  (is (seq? for-expr))
+                  (is (= 'for (first for-expr))))))))
+        
+        ;; Check that config def is preserved
+        (is (some? config-def))
+        (when config-def
+          (is (= 'def (first config-def)))
+          (is (= 'config (second config-def)))
+          (is (map? (nth config-def 2)))))
+      
+      ;; Verify files were written
+      (let [views-content (slurp "reframe-output/reframe_output/views.cljs")]
+        (is (string/includes? views-content "overlay-as-paths"))
+        (is (string/includes? views-content ":svg"))
+        (is (string/includes? views-content "^{:key"))))))

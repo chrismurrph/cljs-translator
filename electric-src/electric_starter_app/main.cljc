@@ -157,7 +157,6 @@
                                 [1 false] 10}
             note-values [[100 true] [50 true] [20 true]]
             customer-change-amount -235]
-        ;; Funny Electric thing that stuff from a let needs 'activated':
         (utl/nothing true "bill-out-bank-notes" {:top top :left left :current-bill-id current-bill-id :current-till current-till
                                                  :calc-state calc-state :bill-denominations bill-denominations :till-denominations till-denominations
                                                  :note-values note-values :customer-change-amount customer-change-amount :config config})

@@ -33,18 +33,16 @@
          (let [sym (z/sexpr first-child)]
            (and (symbol? sym)
                 (or (str/starts-with? (str sym) "dom/")
-                    ;; Check for unsupported namespaces  
-                    (when (str/starts-with? (str sym) "svg/")
-                      (throw (ex-info "SVG elements are not yet supported by the translator. Please use only dom/* elements."
-                                      {:unsupported-element sym
-                                       :element-type "svg"})))
-                    ;; Add other unsupported namespaces here as needed
-                    )))))) 
+                    (str/starts-with? (str sym) "svg/"))))))) 
 
 (defn extract-tag-name
-  "Extract HTML tag name from dom/element symbol"
+  "Extract HTML tag name from dom/element or svg/element symbol"
   [dom-symbol]
-  (keyword (subs (str dom-symbol) 4))) 
+  (let [s (str dom-symbol)]
+    (cond
+      (str/starts-with? s "dom/") (keyword (subs s 4))
+      (str/starts-with? s "svg/") (keyword (subs s 4))
+      :else (throw (ex-info "Unknown element namespace" {:symbol dom-symbol}))))) 
 
 (declare translate-electric-form) 
 
@@ -96,10 +94,9 @@
   "Configuration map for converting namespace aliases to full namespaces.
    Used when translating Electric mutation namespaces to Re-frame event namespaces."
   {'r-events 'restaurant.events
+   'wc-till-events 'restaurant.with-customer.till.events
    ;; Add more mappings as needed
    })
-   ;; Add more mappings as needed
-   
 
 (defn translate-dom-event
   "Extract event handler from (dom/On \"event\" handler) node and return props map"
@@ -246,13 +243,77 @@
         `(~'if ~(z/sexpr condition-zloc) ~translated-then ~translated-else)
         `(~'if ~(z/sexpr condition-zloc) ~translated-then)))
 
+    ;; Handle when forms - translate the body
+    (and (z/list? zloc)
+         (= 'when (z/sexpr (z/down zloc))))
+    (let [when-sym-zloc (z/down zloc)
+          condition-zloc (z/right when-sym-zloc)
+          ;; Get all body forms after condition
+          body-zlocs (loop [current (z/right condition-zloc)
+                           result []]
+                      (if current
+                        (recur (z/right current) (conj result current))
+                        result))
+          ;; Translate all body forms
+          translated-body (mapv translate-electric-form body-zlocs)
+          ;; Filter out nils
+          translated-body (remove nil? translated-body)]
+      ;; Return when form with translated body
+      (if (= 1 (count translated-body))
+        `(~'when ~(z/sexpr condition-zloc) ~@translated-body)
+        `(~'when ~(z/sexpr condition-zloc) ~@translated-body)))
+
+    ;; Handle e/for forms - translate to regular for
+    (and (z/list? zloc)
+         (= 'e/for (z/sexpr (z/down zloc))))
+    (let [for-sym-zloc (z/down zloc)
+          bindings-zloc (z/right for-sym-zloc)
+          bindings (z/sexpr bindings-zloc)
+          ;; Handle e/diff-by in bindings
+          clean-bindings (if (and (vector? bindings)
+                                  (>= (count bindings) 2))
+                           (let [[binding-sym expr] bindings]
+                             ;; Check if expr is (e/diff-by ...)
+                             (if (and (seq? expr)
+                                     (= 'e/diff-by (first expr)))
+                               ;; Replace e/diff-by with just the collection
+                               [binding-sym (nth expr 2)]
+                               bindings))
+                           bindings)
+          ;; Get body forms
+          body-zlocs (loop [current (z/right bindings-zloc)
+                           result []]
+                      (if current
+                        (recur (z/right current) (conj result current))
+                        result))
+          ;; Translate body
+          translated-body (mapv translate-electric-form body-zlocs)
+          ;; Filter out nils
+          translated-body (remove nil? translated-body)
+          ;; Extract the key for React
+          ;; For simple bindings like [x coll], use x as key
+          ;; For destructured bindings like [[k v] map], use first element
+          key-expr (if (vector? clean-bindings)
+                    (let [binding-sym (first clean-bindings)]
+                      (if (vector? binding-sym)
+                        `(~'str ~(first binding-sym))
+                        `(~'str ~binding-sym)))
+                    `(~'str "item"))]
+      ;; Return for form with the key metadata
+      ;; We use vary-meta to attach metadata
+      (if (= 1 (count translated-body))
+        (let [body-elem (first translated-body)]
+          `(~'for ~clean-bindings
+             ~(vary-meta body-elem assoc :key key-expr)))
+        `(~'for ~clean-bindings
+           ~(vary-meta (into [:<>] translated-body) assoc :key key-expr))))
     ;; Check for unsupported special forms that contain DOM elements
     (and (z/list? zloc)
          (when-let [first-child (z/down zloc)]
            (let [form-type (z/sexpr first-child)]
-             (contains? #{'when 'when-not 'when-let 'when-some
+             (contains? #{'when-not 'when-let 'when-some
                           'cond 'case 'condp
-                          'for 'doseq 'while
+                          'doseq 'while
                           'loop 'recur
                           'try 'catch 'finally 'throw
                           '->> '-> 'as-> 'some-> 'some->>

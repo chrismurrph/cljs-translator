@@ -27,6 +27,10 @@
 
 ### Comments
 - Do not include comments in generated code, unless specifically asked to.
+- **CRITICAL**: This means NO comments like `// Handle when forms`, `// Extract the key`, `// Filter out nils` etc.
+- The code should be self-documenting through good naming and structure
+- Adding comments and then trying to remove them often corrupts files - just don't add them in the first place
+- LLMs have a strong habit of adding explanatory comments - this must be consciously overridden
 
 ### Nesting
 - Minimize nesting levels by using proper control flow constructs
@@ -64,8 +68,21 @@
 - When capturing shell output, remember it may be truncated for very large outputs
 - Consider using shell commands for tasks that have mature CLI tools like diffing or git operations
 
-- **Context Maintenance**:
-  - Use `clojure_eval` with `:reload` to ensure you're working with the latest code
-  - always switch into `(in-ns ...)` the namespace that you are working on
-  - Keep function and namespace references fully qualified when crossing namespace boundaries
+### File Editing Best Practices
+- Use `clojure_edit` tool instead of sed/regex for structural code changes
+- When making changes, do NOT add explanatory comments about what the code does
+- Review generated code before submitting to remove any habitual comment additions
+- Be especially careful with duplicate comments when editing - they can break file syntax
 
+### Context Maintenance
+- Use `clojure_eval` with `:reload` to ensure you're working with the latest code
+- always switch into `(in-ns ...)` the namespace that you are working on
+- Keep function and namespace references fully qualified when crossing namespace boundaries
+
+## Working with LLMs
+
+### Critical Reminders for LLMs
+- LLMs often acknowledge the no-comments rule but then violate it in practice - verify compliance
+- If an LLM adds comments and then tries to remove them with sed, it often corrupts the file
+- The no-comments rule is one of the most frequently violated - it requires conscious attention
+- When reviewing LLM-generated code, check for comments BEFORE accepting it
