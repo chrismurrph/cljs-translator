@@ -43,6 +43,16 @@
 - smaller functions make edits faster and reduce the number of tokens
 - reducing tokens makes me happy
 
+
+### Error Handling Philosophy - "Let it Crash"
+- **NO SILENT FALLBACKS** - Throw exceptions for unexpected conditions
+- When data is missing or invalid, throw an informative exception
+- Don't provide default values or "sensible fallbacks" unless explicitly asked
+- If a required configuration/mapping is missing, throw immediately with helpful error message
+- Include relevant context in exception data: what was expected, what was found, available options
+- Early failure is better than generating incorrect output
+- Example: Missing namespace mapping should throw, not generate a possibly-wrong namespace
+- LLMs have a strong preference for fallback behavior - this must be consciously overridden
 ### Library Preferences
 - Prefer `clojure.string` functions over Java interop for string operations
   - Use `str/ends-with?` instead of `.endsWith`

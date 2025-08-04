@@ -1,8 +1,8 @@
 (ns reframe-output.views
-  (:require [r-ui :as r-ui]
+  (:require [restaurant.with-customer.till.events]
+            [r-ui :as r-ui]
+            [re-frame.core :refer [dispatch]]
             [utl :as utl]
-            [wc-muts-till :as wc-muts-till]
-            [wc-state :as wc-state]
             [wc-ui :as wc-ui]))
 
 (defn lacking-+ive-would-ive
@@ -22,14 +22,9 @@
         (utl/nothing true
                      (str "negate? in " str-kind)
                      {:negate? negate?, :selected? selected?, :amount amount}))
-      (wc-state/wc-mutation wc-muts-till/receive-note
-                            current-bill-id
-                            current-till
-                            calc-state
-                            denomination
-                            amount
-                            config
-                            negate?))))
+      (dispatch [:restaurant.with-customer.till.events/receive-note
+                 current-bill-id current-till calc-state denomination amount
+                 config negate?]))))
 
 (defn would-be-too-much-change
   [calc-state customer-change-amount denomination-value]
@@ -47,7 +42,7 @@
   [calc-state num-till-pieces]
   (and (= :giving-change calc-state) (not (pos? num-till-pieces))))
 
-(defn overlay-as-paths-view
+(defn overlay-as-paths
   [z-index n dims]
   (when (> n 1)
     [:div
@@ -57,7 +52,7 @@
             (map vector utl/opacities (utl/rect->path-dims dims n))]
         [:path {:opacity opacity, :d rect-path}])]]))
 
-(defn bill-out-bank-notes-view
+(defn bill-out-bank-notes
   [top left current-bill-id current-till calc-state bill-denominations
    till-denominations note-values customer-change-amount config]
   [:span {:style (wc-ui/generate-absolute-style top left)}
@@ -115,7 +110,7 @@
            :on-click event-f,
            :style {:position "absolute"},
            :class (->class css-kw)} (str face-value)]
-         [overlay-as-paths-view 10 bill-denomination-count dims]]))]])
+         [overlay-as-paths 10 bill-denomination-count dims]]))]])
 
 (def config
   {:cut-deletes
@@ -194,6 +189,6 @@
                   :bill-denominations bill-denominations,
                   :left left,
                   :current-till current-till})
-    [bill-out-bank-notes-view top left current-bill-id current-till calc-state
+    [bill-out-bank-notes top left current-bill-id current-till calc-state
      bill-denominations till-denominations note-values customer-change-amount
      config]))

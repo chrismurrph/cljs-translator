@@ -101,18 +101,40 @@ This project is an AI-assisted tool for translating Electric Clojure programs in
      [:div ...])])
 ```
 
-#### Event Handlers
+#### Event Handlers & Mutations
+
+Electric mutations are transformed to Re-frame dispatches wherever they appear:
+
+##### In DOM Event Handlers
 ```clojure
 ;; Electric
 (dom/button
-  (dom/On "click" #(wc-state/wc-mutation r-muts/take-out [:qr-code]) nil))
+  (dom/On "click" #(wc-state/wc-mutation r-muts/take-out [:qr-code])))
 
 ;; Re-frame
 [:button
- {:on-click (fn [] (dispatch [:restaurant.events/take-out [:qr-code]]))}]
+ {:on-click (fn [] (dispatch [:restaurant.events/take-out :qr-code]))}]
 ```
 
-## Implementation Details
+##### In Regular Functions
+```clojure
+;; Electric
+(defn denomination-event [str-kind denomination disabled? amount]
+  (when-not disabled?
+    (wc-state/wc-mutation wc-muts-till/receive-note amount denomination)))
+
+;; Re-frame
+(defn denomination-event [str-kind denomination disabled? amount]
+  (when-not disabled?
+    (dispatch [:restaurant.with-customer.till.events/receive-note amount denomination])))
+```
+
+The translator:
+- Detects any function call containing "mutation" in its name
+- Extracts the actual mutation symbol (second argument)
+- Transforms the namespace: `r-muts` → `r-events`, `wc-muts-till` → `wc-till-events`
+- Creates a dispatch form with the event vector
+- Works in both `e/defn` and regular `defn` functions
 
 ### Configuration
 
@@ -156,14 +178,23 @@ Returns canonical AST structure with `:views`, `:events`, and `:subs`.
 - Supports nested elements and multiple children
 - Wraps multiple root elements in React Fragment `[:<>]`
 
+#### Mutation Transformation
+- Detects mutation calls anywhere in the code (not just in dom/On handlers)
+- Works in both `e/defn` and regular `defn` functions
+- Transforms patterns like `(wc-state/wc-mutation wc-muts-till/receive-note args...)`
+- Converts to `(dispatch [:restaurant.with-customer.till.events/receive-note args...])`
+- Namespace transformation rules:
+  - `r-muts` → `r-events`
+  - `wc-muts-till` → `wc-till-events`
+  - General pattern: replaces "muts" with "events" in namespace
+- Uses `alias-to-namespace` configuration for final namespace resolution
+- Preserves all arguments in the dispatch vector
+
 #### Event Handler Translation
 - Converts `(dom/On "click" handler)` to `:on-click` props
-- Transforms Electric mutations to Re-frame dispatches:
-  - `wc-state/wc-mutation r-muts/take-out` → `dispatch [:restaurant.events/take-out]`
-- Uses `alias-to-namespace` configuration for namespace resolution
-- Handles both `fn` and `fn*` forms
-
-#### Component Translation
+- Transforms mutations inside handlers to Re-frame dispatches
+- Handles both `fn` and `fn*` function literal forms
+- Creates proper event handler functions: `(fn [] (dispatch [...]))`
 - CamelCase → kebab-case-view conversion
 - Preserves all arguments
 - Maintains component hierarchy
@@ -179,9 +210,9 @@ Returns canonical AST structure with `:views`, `:events`, and `:subs`.
 #### Test Organization
 - All tests use hardcoded forms (never read from files)
 - Tests are self-contained and reproducible
-- 9 tests covering all current functionality
+- 10 tests covering all current functionality
 - Only one test with 'current' in name writes output files
-
+- **Current tests should NEVER slurp files** - They should only test in-memory translation results
 #### Current Test Coverage
 1. Direct DOM translation
 2. Empty functions
@@ -195,14 +226,16 @@ Returns canonical AST structure with `:views`, `:events`, and `:subs`.
 
 ### Development Workflow
 1. Human updates Electric source and expected Re-frame output
-2. AI creates new test with 'current' in name
+2. AI creates new test with 'current' in name that tests in-memory translation only
+   - **NO file slurping in current tests** - Use (t/translate forms "Main") not (slurp ...)
+   - File writing is optional: (t/translate forms "Main" "reframe-output")
 3. **AI MUST create backups before modifying files** (save working versions to prevent corruption)
    - Use `cp src/translator/translator.clj src/translator/translator.clj.backup` before changes
    - Or commit to git before making changes
 4. AI implements translation for new patterns
 5. All tests must pass before proceeding
 6. Manual verification of generated output
-
+7. When ready, rename current test to numbered test and remove file writing
 ### Critical Safety Practices
 - **Always backup files before modification** - Working code can be corrupted during edits
 - Use version control (git) to save known-good states

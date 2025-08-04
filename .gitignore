@@ -20,4 +20,4 @@ node_modules
 repl.calva-repl
 temp
 tmp
-*.clj.backup
+*.clj.backup*

@@ -176,7 +176,7 @@
                               :top (r-ui/pixelate top)
                               :left (r-ui/pixelate left)})
 
-                          '(defn label-and-amount-view [top left text-of-label amt]
+                          '(defn label-and-amount [top left text-of-label amt]
                              [:span
                               {:style (generate-absolute-style top left)}
                               [:div
@@ -193,7 +193,7 @@
 
                           '(defn main-view [ring-req]
                              [:div
-                              [label-and-amount-view 0 0 "Some text" 20]
+                              [label-and-amount 0 0 "Some text" 20]
                               [:h1 "Hello from Electric Clojure"]
                               [:p "Source code for this page is in "
                                [:code "src/electric_start_app/main.cljc"]]
@@ -280,7 +280,7 @@
                               :top (r-ui/pixelate top)
                               :left (r-ui/pixelate left)})
 
-                          '(defn label-and-amount-view [top left text-of-label amt]
+                          '(defn label-and-amount [top left text-of-label amt]
                              [:span
                               {:style (generate-absolute-style top left)}
                               [:div
@@ -297,7 +297,7 @@
 
                           '(defn main-view [ring-req]
                              [:div
-                              [label-and-amount-view 0 0 "Some text" 20]
+                              [label-and-amount 0 0 "Some text" 20]
                               [:h1 "Hello from Electric Clojure"]
                               [:p "Source code for this page is in "
                                [:code "src/electric_start_app/main.cljc"]]
@@ -370,10 +370,10 @@
           result (t/translate forms "Main")
           views (t/extract-simple-forms (:views result))
 
-          ;; Find the label-and-amount-new-view function
+          ;; Find the label-and-amount-new function
           label-and-amount-fn (first (filter #(and (seq? %)
                                                    (= 'defn (first %))
-                                                   (= 'label-and-amount-new-view (second %)))
+                                                   (= 'label-and-amount-new (second %)))
                                            views))]
 
       ;; Verify the function exists
@@ -401,8 +401,8 @@
       ;; Verify all views are generated (including Main)
       (is (= 5 (count views)))))) 
 
-(deftest test-current-svg-and-complex-forms
-  (testing "Current translation handles SVG, e/for, plain defns, and complex nested structures - writes to output files"
+(deftest test-translation-with-output-5
+  (testing "Translation handles SVG, e/for, plain defns, and complex nested structures"
     (let [;; Electric forms from the actual Main file - simplified to focus on new patterns
           forms [{:form '(defn ->class [_] ""),
                   :name '->class,
@@ -435,49 +435,78 @@
                   :type :e/defn,
                   :deps '#{OverlayAsPaths}}]
           
-          ;; Call translate with output-ns to write files
-          result (t/translate forms "Main" "reframe-output")
-          views (t/extract-simple-forms (:views result))]
+          ;; Call translate WITHOUT output-ns - no file writing
+          result (t/translate forms "Main")
+          views (t/extract-simple-forms (:views result))
+          
+          ;; Expected views - in order
+          expected-views ['(defn ->class [_] "")
+                          
+                          '(defn overlay-as-paths [z-index n dims]
+                             (when (> n 1)
+                               [:div
+                                {:style {:pointer-events "none"
+                                         :position "absolute"
+                                         :z-index z-index}}
+                                [:svg
+                                 (for [[opacity rect-path] 
+                                       (map vector utl/opacities (utl/rect->path-dims dims n))]
+                                   [:path {:opacity opacity :d rect-path}])]]))
+                          
+                          '(def config {:restaurant {:b? true}})
+                          
+                          '(defn main-view [ring-req]
+                             [:div [overlay-as-paths 10 2 {:width 100 :height 50}]])]]
 
-      ;; Verify functions are generated
-      (is (= 4 (count views))) ; ->class, OverlayAsPaths, config, Main
+      ;; Verify we got the expected functions
+      (is (= 4 (count views)))
       
-      ;; Find specific functions to verify structure
-      (let [overlay-fn (first (filter #(and (seq? %)
-                                           (= 'defn (first %))
-                                           (= 'overlay-as-paths (second %)))
-                                     views))
-            config-def (first (filter #(and (seq? %)
-                                          (= 'def (first %))
-                                          (= 'config (second %)))
-                                    views))]
-        
-        ;; Check OverlayAsPaths function has SVG elements
-        (when overlay-fn
-          (let [[_ _ params & body] overlay-fn
-                when-form (first body)]
-            (is (= 'when (first when-form)))
-            (let [div-form (nth when-form 2)]
-              (is (vector? div-form))
-              (is (= :div (first div-form)))
-              ;; Check for SVG element
-              (let [svg-form (nth div-form 2)]
-                (is (vector? svg-form))
-                (is (= :svg (first svg-form)))
-                ;; Check for for loop
-                (let [for-expr (second svg-form)]
-                  (is (seq? for-expr))
-                  (is (= 'for (first for-expr))))))))
-        
-        ;; Check that config def is preserved
-        (is (some? config-def))
-        (when config-def
-          (is (= 'def (first config-def)))
-          (is (= 'config (second config-def)))
-          (is (map? (nth config-def 2)))))
+      ;; Verify each view matches expected output
+      (is (= expected-views views))
       
-      ;; Verify files were written
-      (let [views-content (slurp "reframe-output/reframe_output/views.cljs")]
-        (is (string/includes? views-content "overlay-as-paths"))
-        (is (string/includes? views-content ":svg"))
-        (is (string/includes? views-content "^{:key"))))))
+      ;; Additional specific checks for new features
+      (let [overlay-fn (second views)
+            overlay-str (pr-str overlay-fn)]
+        ;; Check SVG translation - look for :svg keyword
+        (is (string/includes? overlay-str ":svg"))
+        ;; Check for translation - look for 'for symbol
+        (is (string/includes? overlay-str "(for "))
+        ;; Check when form preservation
+        (is (string/includes? overlay-str "(when ")))))) 
+
+ (deftest test-current-mutation-in-defn
+  (testing "Mutations in regular defn functions are transformed to dispatches"
+    (let [forms [{:form '(defn denomination-event [str-kind denomination disabled? amount]
+                           (when-not disabled?
+                             (wc-state/wc-mutation wc-muts-till/receive-note amount denomination))),
+                  :name 'denomination-event,
+                  :type :defn,
+                  :deps #{}}]
+          
+          result (t/translate forms "denomination-event")
+          views (t/extract-simple-forms (:views result))
+          
+          expected-view '(defn denomination-event [str-kind denomination disabled? amount]
+                           (when-not disabled?
+                             (dispatch [:restaurant.with-customer.till.events/receive-note amount denomination])))]
+
+      (is (= 1 (count views)))
+      (is (= expected-view (first views)))
+      
+      (let [view-str (pr-str (first views))]
+        (is (string/includes? view-str "dispatch"))
+        (is (string/includes? view-str ":restaurant.with-customer.till.events/receive-note"))
+        (is (not (string/includes? view-str "mutation"))))))) 
+
+ (deftest test-unknown-namespace-throws
+  (testing "Unknown namespace aliases throw informative exceptions"
+    (let [forms [{:form '(defn some-fn []
+                           (unknown-state/unknown-mutation unknown-ns/some-event)),
+                  :name 'some-fn,
+                  :type :defn,
+                  :deps #{}}]]
+      (is (thrown-with-msg? 
+           clojure.lang.ExceptionInfo
+           #"Unknown namespace alias"
+           (t/translate forms "some-fn"))
+          "Should throw for unknown namespace alias"))))

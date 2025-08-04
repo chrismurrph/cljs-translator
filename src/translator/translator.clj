@@ -56,20 +56,17 @@
                 (Character/isUpperCase (first (name sym)))))))) 
 
 (defn translate-component-call
-  "Translate a component call from (ComponentName args) to [component-name-view args]"
+  "Translate a component call from (ComponentName args) to [component-name args]"
   [zloc]
   (when (component-call? zloc)
     (let [component-name (z/sexpr (z/down zloc))
-          ;; Convert CamelCase to kebab-case and add -view suffix
-          view-name (electric-name->view-name component-name)
-          ;; Get all the arguments
+          view-name (electric-name->kebab-case component-name)
           args (loop [child (z/right (z/down zloc))
                       result []]
                  (if child
                    (recur (z/right child)
                           (conj result (translate-electric-form child)))
                    result))]
-      ;; Return as a vector with component name and args
       (into [view-name] args))))
 
 (defn translate-dom-text
@@ -90,6 +87,12 @@
         (when-let [props-node (z/right first-child)]
           (z/sexpr props-node))))))
 
+(def mutation-ns-to-event-ns
+  "Map mutation namespaces to their corresponding event namespaces.
+   For special cases that don't follow the simple muts->events pattern."
+  {"wc-muts-till" 'wc-till-events
+   "r-muts" 'r-events})
+
 (def alias-to-namespace
   "Configuration map for converting namespace aliases to full namespaces.
    Used when translating Electric mutation namespaces to Re-frame event namespaces."
@@ -98,7 +101,45 @@
    ;; Add more mappings as needed
    })
 
-(defn translate-dom-event
+(defn transform-mutation-to-dispatch
+  "Transform a mutation call to a Re-frame dispatch.
+   Handles patterns like:
+   (wc-state/wc-mutation wc-muts-till/receive-note args...)
+   -> (dispatch [::wc-till-events/receive-note args...])"
+  [mutation-form]
+  (when (and (seq? mutation-form)
+             (symbol? (first mutation-form))
+             (str/includes? (str (first mutation-form)) "mutation"))
+    (let [actual-mutation (second mutation-form)
+          mutation-args (drop 2 mutation-form)]
+      (when (and (symbol? actual-mutation)
+                 (namespace actual-mutation))
+        (let [mutation-ns (namespace actual-mutation)
+              new-ns (or (get mutation-ns-to-event-ns mutation-ns)
+                        (symbol (str/replace mutation-ns "muts" "events")))
+              event-name (name actual-mutation)
+              full-ns (get alias-to-namespace new-ns)]
+          (if full-ns
+            (list 'dispatch (into [(keyword (name full-ns) event-name)] mutation-args))
+            (throw (ex-info (str "Unknown namespace alias: " new-ns 
+                                 ". Please add a mapping to alias-to-namespace configuration.")
+                            {:alias new-ns
+                             :mutation-ns mutation-ns
+                             :available-aliases (keys alias-to-namespace)})))))))) 
+
+ (defn transform-mutations-in-form
+  "Walk through a form and transform any mutation calls to dispatches"
+  [form]
+  (walk/prewalk
+   (fn [x]
+     (if (and (seq? x)
+              (symbol? (first x))
+              (str/includes? (str (first x)) "mutation"))
+       (or (transform-mutation-to-dispatch x) x)
+       x))
+   form)) 
+
+ (defn translate-dom-event
   "Extract event handler from (dom/On \"event\" handler) node and return props map"
   [zloc]
   (when (z/list? zloc)
@@ -108,44 +149,14 @@
           (when-let [handler-node (z/right event-name-node)]
             (let [event-name (z/sexpr event-name-node)
                   handler (z/sexpr handler-node)
-                  ;; Convert Electric event name to Re-frame format
-                  ;; "click" -> :on-click
                   rf-event-key (keyword (str "on-" event-name))]
-              ;; Check if handler is a function literal with a mutation call
               (if (and (seq? handler)
                        (or (= 'fn (first handler))
                            (= 'fn* (first handler))))
-                ;; It's a function literal #(...)
-                (let [fn-body (nth handler 2)]  ;; Get the body of the fn
-                  (if (and (seq? fn-body)
-                           ;; Look for mutation pattern - any call with "mutation" in it
-                           (some #(and (symbol? %) 
-                                      (str/includes? (str %) "mutation")) 
-                                 (flatten fn-body)))
-                    ;; Extract the actual mutation being called
-                    ;; Pattern: (mutation-fn actual-mutation args...)
-                    (let [;; The actual mutation is the second arg to the mutation function
-                          actual-mutation (second fn-body)
-                          mutation-args (drop 2 fn-body)]
-                      (when (and (symbol? actual-mutation)
-                                 (namespace actual-mutation))
-                        (let [;; Transform namespace: r-muts → r-events
-                              ns-parts (str/split (namespace actual-mutation) #"-")
-                              new-ns (str/join "-" 
-                                              (map #(if (= % "muts") "events" %) 
-                                                   ns-parts))
-                              new-ns-sym (symbol new-ns)
-                              event-name (name actual-mutation)]
-                          ;; Check if we have a mapping for this namespace alias
-                          (if-let [full-ns (get alias-to-namespace new-ns-sym)]
-                            {rf-event-key (list 'fn [] (list 'dispatch (into [(keyword (name full-ns) event-name)] mutation-args)))} 
-                            (throw (ex-info (str "Unknown namespace alias: " new-ns-sym 
-                                                 ". Please add a mapping to alias-to-namespace configuration.")
-                                            {:alias new-ns-sym
-                                             :available-aliases (keys alias-to-namespace)}))))))
-                    ;; Not a mutation pattern - return generic handler
+                (let [fn-body (nth handler 2)]
+                  (if-let [dispatch-form (transform-mutation-to-dispatch fn-body)]
+                    {rf-event-key (list 'fn [] dispatch-form)}
                     {rf-event-key handler}))
-                ;; Not a function literal
                 {rf-event-key handler}))))))))
 
 (defn translate-electric-form
@@ -319,18 +330,25 @@
                           '->> '-> 'as-> 'some-> 'some->>
                           'and 'or} form-type))))
     (let [form-type (z/sexpr (z/down zloc))
-          ;; Check if it contains any dom/ calls
           form-str (z/string zloc)
           contains-dom? (str/includes? form-str "dom/")]
       (if contains-dom?
         (throw (ex-info (str "Unsupported form '" form-type "' containing DOM elements. "
-                             "The translator currently only supports 'let' and 'if' for control flow. "
+                             "The translator currently supports 'let', 'if', 'when', and 'e/for' for control flow. "
                              "Please refactor to use supported forms.")
                         {:unsupported-form form-type
                          :form (z/sexpr zloc)
-                         :supported-forms #{'let 'if}}))
-        ;; If it doesn't contain DOM elements, pass it through as-is
+                         :supported-forms #{'let 'if 'when 'e/for}}))
         (z/sexpr zloc)))
+
+    ;; Check for mutation calls anywhere
+    (and (z/list? zloc)
+         (when-let [first-child (z/down zloc)]
+           (let [sym (z/sexpr first-child)]
+             (and (symbol? sym)
+                  (str/includes? (str sym) "mutation")))))
+    (let [form (z/sexpr zloc)]
+      (or (transform-mutation-to-dispatch form) form))
 
     ;; For other nodes, try to get sexpr
     (z/sexpr-able? zloc)
@@ -461,23 +479,20 @@
 
 (defn create-view-function
   "Create a Re-frame view function from Electric function components"
-  [electric-name params body-zlocs]
-  (let [view-name (electric-name->view-name electric-name)
-        ;; Translate each body expression
+  [electric-name params body-zlocs is-main?]
+  (let [view-name (if is-main?
+                    (electric-name->view-name electric-name)
+                    (electric-name->kebab-case electric-name))
         body-elements (mapv translate-electric-form body-zlocs) 
-        ;; Filter out nils
         body-elements (remove nil? body-elements)
-        ;; Wrap multiple elements in React Fragment
         view-body (if (= 1 (count body-elements))
                     (first body-elements)
                     (into [:<>] body-elements))
-        ;; Create the defn form with parameters
         view-form (if (empty? params)
                     `(~'defn ~view-name []
                       ~view-body)
                     `(~'defn ~view-name ~params
                       ~view-body))
-        ;; Calculate dependencies
         deps (find-dependencies view-form)]
     {:view view-form
      :name view-name
@@ -791,11 +806,13 @@
                                                                      (if node
                                                                        (recur (z/right node) (conj bodies node))
                                                                        bodies))))]
-                                              (create-view-function name (or params []) (or body-zlocs [])))
+                                              (create-view-function name (or params []) (or body-zlocs []) (= name (symbol starting-fn-name))))
 
                                             ;; Regular defn or def - include as-is
                                             (:defn :def)
-                                            {:view form
+                                            {:view (if (= type :defn)
+                                                    (transform-mutations-in-form form)
+                                                    form)
                                              :name name
                                              :deps (find-dependencies form)}))
                                         forms-or-code)]
@@ -827,7 +844,7 @@
                                                                       (recur (z/right node) (conj bodies node))
                                                                       bodies))))
                                                  ;; Create view with metadata
-                                                 view-data (create-view-function electric-name (or params []) (or body-zlocs []))]
+                                                 view-data (create-view-function electric-name (or params []) (or body-zlocs []) true)]
 
                                              {:views [(assoc view-data :topo-sort 1)]
                                               :events []
