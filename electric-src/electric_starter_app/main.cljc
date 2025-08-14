@@ -1,13 +1,15 @@
 (ns electric-starter-app.main
   (:require
-   [hyperfiddle.electric-svg3 :as svg]
-   [restaurant.with-customer.mutations.till :as wc-muts-till]
+   [com.pangglow.js-interop :as js-interop]
    [com.pangglow.util :as utl]
    [hyperfiddle.electric-dom3 :as dom]
+   [hyperfiddle.electric-svg3 :as svg]
    [hyperfiddle.electric3 :as e]
+   [restaurant.mutations :as r-muts]
    [restaurant.ui :as r-ui]
-   [restaurant.with-customer.ui :as wc-ui]
-   [restaurant.with-customer.state :as wc-state]))
+   [restaurant.with-customer.mutations.till :as wc-muts-till]
+   [restaurant.with-customer.state :as wc-state]
+   [restaurant.with-customer.ui :as wc-ui]))
 
 (defn ->class [_]
   "")
@@ -126,39 +128,78 @@
               :desc
               "Record all the wc mutations, that pressing a Developer button can save them to a file on the server"}})
 
+(def debug? true)
+
+(e/defn LoginScreen [mut-f {:keys [username password organisation]} org?]
+  (let [get-values (fn []
+                     (let [un-value (js-interop/get-value username)
+                           pw-value (js-interop/get-value password)]
+                       (cond-> [un-value pw-value]
+                         org? (conj (js-interop/get-value organisation)))))
+        valid? (fn [values]
+                 (every? utl/not-blank? values))
+        inject (fn [[un-value pw-value org-value :as values]]
+                 (utl/nothing debug? "Sign In!" {:username un-value
+                                                 #_#_:password pw-value
+                                                 :organisation org-value})
+                 (mut-f r-muts/inject-many [:username :password :organisation] values))
+        keydown (fn [e]
+                  (let [key-pressed (.-key e)]
+                    (when (= "Enter" key-pressed)
+                      (let [values (get-values)]
+                        (when (valid? values)
+                          (inject values))))))
+        reason "Focusing on username"]
+    (utl/nothing debug?  reason)
+    (js-interop/focus-on-dom-id-3 username)
+    (dom/div
+      (dom/props {:class (->class :login/body)})
+      (dom/div
+        (dom/props {:class (->class :login/login-box)})
+        (dom/h1
+          (dom/props {:class (->class :login/h1)})
+          (dom/text "Register/Login"))
+        (dom/div
+          (dom/div
+            (dom/props {:class (->class :login/input-group)})
+            (dom/label {:class (->class :login/label)
+                        :for username}
+              (dom/text "Username"))
+            (dom/input (dom/props {:class (->class :login/input)
+                                   :type "text"
+                                   :id username
+                                   :name "username"})
+              (dom/On "keydown" keydown nil)))
+          (dom/div
+            (dom/props {:class (->class :login/input-group)})
+            (dom/label (dom/props {:class (->class :login/label)
+                                   :for password})
+              (dom/text "Password"))
+            (dom/input (dom/props {:class (->class :login/input)
+                                   :type "password"
+                                   :id password
+                                   :name "password"})
+              (dom/On "keydown" keydown nil)))
+          (when org?
+            (dom/div
+              (dom/props {:class (->class :login/input-group)})
+              (dom/label (dom/props {:class (->class :login/label)
+                                     :for organisation})
+                (dom/text "Organisation"))
+              (dom/input (dom/props {:class (->class :login/input)
+                                     :type "text"
+                                     :id organisation
+                                     :name "organisation"})
+                (dom/On "keydown" keydown nil))))
+          (dom/button
+            (dom/props {:class (->class :login/button)})
+            (dom/On "click" #(let [values (get-values)] (inject values)) nil)
+            (dom/text "Sign In")))))))
+
 (e/defn Main [ring-req]
   (e/client
     (binding [dom/node #?(:cljs js/document.body :clj nil)
               e/http-request (e/server ring-req)]
-      (let [top 70 left 0 current-bill-id "Z2DNP5ZLZ9HTUAH0"
-            current-till {:till/id "G36MR7DXKQ7QDR0C",
-                          :till/till
-                          {[20 true] 10,
-                           [5 false] 10,
-                           [1000 true] 10,
-                           [10 false] 10,
-                           [500 true] 10,
-                           [200 true] 10,
-                           [20 false] 10,
-                           [100 true] 10,
-                           [50 true] 10,
-                           [1 false] 10}}
-            calc-state :billing-out
-            bill-denominations {}
-            till-denominations {[20 true] 10,
-                                [5 false] 10,
-                                [1000 true] 10,
-                                [10 false] 10,
-                                [500 true] 10,
-                                [200 true] 10,
-                                [20 false] 10,
-                                [100 true] 10,
-                                [50 true] 10,
-                                [1 false] 10}
-            note-values [[100 true] [50 true] [20 true]]
-            customer-change-amount -235]
-        (utl/nothing true "bill-out-bank-notes" {:top top :left left :current-bill-id current-bill-id :current-till current-till
-                                                 :calc-state calc-state :bill-denominations bill-denominations :till-denominations till-denominations
-                                                 :note-values note-values :customer-change-amount customer-change-amount :config config})
-        (BillOutBankNotes top left current-bill-id current-till calc-state bill-denominations till-denominations
-          note-values customer-change-amount config)))))
+      (let [f (constantly true)
+            m {:username "Chris" :password "pass" :organisation "Edgewood"}]
+        (LoginScreen f m false)))))
